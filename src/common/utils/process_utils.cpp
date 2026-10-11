@@ -12,6 +12,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "common/utils/interpolation.h"
+
 extern char** environ;
 
 namespace vinput::process {
@@ -52,16 +54,17 @@ std::vector<char*> BuildEnvp(const CommandSpec& spec, std::vector<std::string>* 
 
   for (const auto& [key, value] : spec.env) {
     bool replaced = false;
+    const std::string resolved_value = vinput::interpolate::InterpolateEnv(value);
     const std::string prefix = key + "=";
     for (auto& entry : *storage) {
       if (entry.rfind(prefix, 0) == 0) {
-        entry = prefix + value;
+        entry = prefix + resolved_value;
         replaced = true;
         break;
       }
     }
     if (!replaced) {
-      storage->push_back(prefix + value);
+      storage->push_back(prefix + resolved_value);
     }
   }
 
@@ -79,18 +82,6 @@ void CloseIfOpen(int* fd) {
     close(*fd);
     *fd = -1;
   }
-}
-
-bool ApplyEnvironment(const CommandSpec& spec) {
-  for (const auto& [key, value] : spec.env) {
-    if (key.empty()) {
-      continue;
-    }
-    if (setenv(key.c_str(), value.c_str(), 1) != 0) {
-      return false;
-    }
-  }
-  return true;
 }
 
 } // namespace
@@ -394,9 +385,9 @@ bool SpawnForMonitoring(const CommandSpec& spec, const std::filesystem::path& wo
       chdir(working_dir.c_str());
     }
 
-    if (!ApplyEnvironment(spec)) {
-      _exit(127);
-    }
+    std::vector<std::string> env_storage;
+    std::vector<char*> envp = BuildEnvp(spec, &env_storage);
+    environ = envp.data();
 
     execvp(spec.command.c_str(), argv.data());
     _exit(127);
