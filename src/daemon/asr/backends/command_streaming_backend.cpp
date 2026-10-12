@@ -253,7 +253,7 @@ public:
       : provider_(provider), provider_id_(std::move(provider_id)),
         deadline_(Clock::time_point::max()) {}
 
-  ~CommandStreamingSession() override { Terminate(false); }
+  ~CommandStreamingSession() override { Terminate(); }
 
   bool PushAudio(std::span<const int16_t> pcm, std::string* error) override {
     if (finished_) {
@@ -300,9 +300,15 @@ public:
 
     finished_ = true;
     if (!FlushPendingChunk(true, error)) {
+      QueueError(error != nullptr && !error->empty() ? *error : "failed to flush audio chunk.");
+      QueueCompleted();
+      Terminate();
       return false;
     }
     if (!SendControlEvent("finish", error)) {
+      QueueError(error != nullptr && !error->empty() ? *error : "failed to send finish event.");
+      QueueCompleted();
+      Terminate();
       return false;
     }
     CloseIfOpen(&child_.stdin_fd);
@@ -311,12 +317,15 @@ public:
 
     while (!saw_final_text_ && !completed_ && !child_.child_exited) {
       if (!PumpIo(kPollSliceMs, error)) {
+        QueueError(error != nullptr && !error->empty() ? *error : "failed to poll provider.");
+        QueueCompleted();
+        Terminate();
         return false;
       }
       if (HasTimedOut(deadline_)) {
         QueueError(FormatProviderError(std::move(stderr_tail_), "timed out."));
         QueueCompleted();
-        Terminate(true);
+        Terminate();
         if (error) {
           *error = events_.back().error;
         }
@@ -324,21 +333,16 @@ public:
       }
     }
 
+    bool grace_pump_failed = false;
     if (saw_final_text_) {
       const Clock::time_point grace_deadline =
           Clock::now() + std::chrono::milliseconds(kFinalGraceMs);
       while (!HasTimedOut(grace_deadline) && !completed_ && !child_.child_exited) {
         if (!PumpIo(RemainingMs(grace_deadline, kPollSliceMs), error)) {
-          return false;
+          grace_pump_failed = true;
+          break;
         }
       }
-      PumpIo(0, nullptr);
-      QueueCompleted();
-      Terminate(true);
-      if (error) {
-        error->clear();
-      }
-      return true;
     }
 
     PumpIo(0, nullptr);
@@ -347,6 +351,7 @@ public:
       QueueError(FormatProviderError(std::move(stderr_tail_), "returned no text."));
     }
     QueueCompleted();
+    Terminate();
 
     if (error) {
       if (saw_error_ && !events_.empty()) {
@@ -357,9 +362,12 @@ public:
           }
         }
       }
+      if (grace_pump_failed) {
+        return false;
+      }
       error->clear();
     }
-    return !saw_error_;
+    return !saw_error_ && !grace_pump_failed;
   }
 
   void Cancel() override {
@@ -370,7 +378,7 @@ public:
       }
     }
     QueueCompleted();
-    Terminate(true);
+    Terminate();
   }
 
   std::vector<RecognitionEvent> PollEvents() override {
@@ -722,22 +730,28 @@ private:
     ConsumeStderrLines(true);
   }
 
-  void Terminate(bool force_kill) {
+  void Terminate() {
     if (terminated_) {
       return;
     }
     terminated_ = true;
 
-    if (force_kill && child_.pid > 0 && !child_.child_exited) {
-      kill(child_.pid, SIGKILL);
-      waitpid(child_.pid, nullptr, 0);
-      child_.child_exited = true;
-      child_.exit_code = -1;
-    }
-
     CloseIfOpen(&child_.stdin_fd);
     CloseIfOpen(&child_.stdout_fd);
     CloseIfOpen(&child_.stderr_fd);
+
+    ReapChild();
+    if (child_.pid > 0 && !child_.child_exited) {
+      kill(child_.pid, SIGKILL);
+      pid_t wait_rc = waitpid(child_.pid, nullptr, 0);
+      while (wait_rc < 0 && errno == EINTR) {
+        wait_rc = waitpid(child_.pid, nullptr, 0);
+      }
+      if (wait_rc == child_.pid || (wait_rc < 0 && errno == ECHILD)) {
+        child_.child_exited = true;
+        child_.exit_code = -1;
+      }
+    }
   }
 
   CommandAsrProvider provider_;
