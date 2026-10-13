@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include "common/registry/installed_manifest.h"
 
 struct CoreConfig;
 
@@ -14,6 +18,20 @@ enum class Kind {
   kLlmAdapter,
 };
 
+enum class UpdateStatus : std::uint8_t {
+  kNotInstalled,
+  kUpToDate,
+  kUpdateAvailable,
+};
+
+struct ResourceVersionInfo {
+  std::string installed_version;
+  std::string remote_version;
+  std::string installed_sha256;
+  std::string remote_sha256;
+  UpdateStatus status = UpdateStatus::kNotInstalled;
+};
+
 struct EnvSpec {
   std::string name;
   bool required = false;
@@ -22,6 +40,8 @@ struct EnvSpec {
 struct RegistryEntry {
   std::string id;
   std::string short_id;
+  std::string version;
+  std::string sha256;
   bool stream = false;
   std::string command;
   std::vector<std::string> script_urls;
@@ -46,5 +66,10 @@ bool MaterializeAsrProvider(CoreConfig* config, const RegistryEntry& entry,
 bool MaterializeLlmAdapter(CoreConfig* config, const RegistryEntry& entry,
                            const std::filesystem::path& script_path, std::string* error,
                            const std::map<std::string, std::string>& env_overrides = {});
+
+ResourceVersionInfo CheckResourceVersion(const vinput::registry::InstalledManifest& manifest,
+                                         Kind kind, const RegistryEntry& entry,
+                                         bool is_installed_in_config);
+bool UnregisterInstalledScript(std::string_view id);
 
 } // namespace vinput::script
