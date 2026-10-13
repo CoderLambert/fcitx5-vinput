@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "common/utils/interpolation.h"
+#include "common/utils/process_utils.h"
 #include "common/utils/string_utils.h"
 
 extern char** environ;
@@ -165,7 +166,9 @@ bool SpawnChild(const CommandAsrProvider& provider, ChildProcess* child, std::st
   int stdin_pipe[2] = {-1, -1};
   int stdout_pipe[2] = {-1, -1};
   int stderr_pipe[2] = {-1, -1};
-  if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+  if (!vinput::process::CreateCloexecPipe(stdin_pipe) ||
+      !vinput::process::CreateCloexecPipe(stdout_pipe) ||
+      !vinput::process::CreateCloexecPipe(stderr_pipe)) {
     if (error) {
       *error = std::string("pipe failed: ") + std::strerror(errno);
     }
