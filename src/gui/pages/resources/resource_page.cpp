@@ -28,12 +28,16 @@
 #include <QtWidgets/qstyleditemdelegate.h>
 #include <QtWidgets/qstyleoption.h>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
+#include <memory>
 #include <system_error>
 #include <variant>
 
+#include "common/config/core_config.h"
 #include "common/config/core_config_types.h"
 #include "common/llm/adapter_manager.h"
+#include "common/registry/installed_manifest.h"
 #include "common/registry/registry_models.h"
 #include "common/registry/registry_scripts.h"
 #include "common/utils/string_utils.h"
@@ -204,9 +208,11 @@ ResourcePage::ResourcePage(QWidget* parent) : QWidget(parent) {
   providerLayout->addWidget(tableAvailableProviders_, 1);
 
   btnAddProvider_ = new QPushButton(tr("Install"));
+  btnUpdateProvider_ = new QPushButton(tr("Update"));
   btnRemoveProvider_ = new QPushButton(tr("Remove"));
   auto* providerBtnLayout = new QVBoxLayout();
   providerBtnLayout->addWidget(btnAddProvider_);
+  providerBtnLayout->addWidget(btnUpdateProvider_);
   providerBtnLayout->addWidget(btnRemoveProvider_);
 #if !VINPUT_ENABLE_LOCAL_ASR
   providerBtnLayout->addWidget(btnRefreshResources_);
@@ -230,9 +236,11 @@ ResourcePage::ResourcePage(QWidget* parent) : QWidget(parent) {
   adapterLayout->addWidget(tableAvailableAdapters_, 1);
 
   btnAddAdapter_ = new QPushButton(tr("Install"));
+  btnUpdateAdapter_ = new QPushButton(tr("Update"));
   btnRemoveAdapter_ = new QPushButton(tr("Remove"));
   auto* adapterBtnLayout = new QVBoxLayout();
   adapterBtnLayout->addWidget(btnAddAdapter_);
+  adapterBtnLayout->addWidget(btnUpdateAdapter_);
   adapterBtnLayout->addWidget(btnRemoveAdapter_);
   adapterBtnLayout->addStretch();
   adapterLayout->addLayout(adapterBtnLayout);
@@ -266,8 +274,10 @@ ResourcePage::ResourcePage(QWidget* parent) : QWidget(parent) {
 #endif
   connect(btnRefreshResources_, &QPushButton::clicked, this, &ResourcePage::refreshAll);
   connect(btnAddProvider_, &QPushButton::clicked, this, &ResourcePage::onAddProviderClicked);
+  connect(btnUpdateProvider_, &QPushButton::clicked, this, &ResourcePage::onUpdateProviderClicked);
   connect(btnRemoveProvider_, &QPushButton::clicked, this, &ResourcePage::onRemoveProviderClicked);
   connect(btnAddAdapter_, &QPushButton::clicked, this, &ResourcePage::onAddAdapterClicked);
+  connect(btnUpdateAdapter_, &QPushButton::clicked, this, &ResourcePage::onUpdateAdapterClicked);
   connect(btnRemoveAdapter_, &QPushButton::clicked, this, &ResourcePage::onRemoveAdapterClicked);
   connect(tableAvailableProviders_, &QTableWidget::itemSelectionChanged, this,
           &ResourcePage::updateProviderButtons);
@@ -303,8 +313,10 @@ ResourcePage::ResourcePage(QWidget* parent) : QWidget(parent) {
           [this](const QString& text) { applyTableFilter(tableAvailableAdapters_, text); });
 
   btnAddProvider_->setEnabled(false);
+  btnUpdateProvider_->setEnabled(false);
   btnRemoveProvider_->setEnabled(false);
   btnAddAdapter_->setEnabled(false);
+  btnUpdateAdapter_->setEnabled(false);
   btnRemoveAdapter_->setEnabled(false);
 
   connect(&I18nCache::Get(), &I18nCache::mapUpdated, this,
@@ -498,6 +510,7 @@ void ResourcePage::populateRemoteProviders(
   tableAvailableProviders_->setRowCount(0);
   CoreConfig config = ConfigManager::Get().Load();
   auto i18n_map = I18nCache::Get().GetMap();
+  const auto manifest = vinput::registry::InstalledManifest::Load();
 
   for (const auto& entry : providers) {
     QString id = QString::fromStdString(entry.id);
@@ -515,10 +528,29 @@ void ResourcePage::populateRemoteProviders(
     tableAvailableProviders_->setItem(row, 2,
                                       MakeCell(entry.stream ? tr("stream") : tr("non-stream")));
 
-    bool installed = ResolveAsrProvider(config, entry.id) != nullptr;
-    QString status = installed ? tr("installed") : tr("available");
+    const bool installed = ResolveAsrProvider(config, entry.id) != nullptr;
+    const auto ver_info = vinput::script::CheckResourceVersion(
+        manifest, vinput::script::Kind::kAsrProvider, entry, installed);
+
+    QString status = tr("available");
+    if (installed) {
+      if (ver_info.status == vinput::script::UpdateStatus::kUpdateAvailable) {
+        if (!ver_info.installed_version.empty() && !ver_info.remote_version.empty()) {
+          status = tr("update available (%1 -> %2)")
+                       .arg(QString::fromStdString(ver_info.installed_version),
+                            QString::fromStdString(ver_info.remote_version));
+        } else {
+          status = tr("update available");
+        }
+      } else if (!ver_info.installed_version.empty()) {
+        status = tr("installed (%1)").arg(QString::fromStdString(ver_info.installed_version));
+      } else {
+        status = tr("installed");
+      }
+    }
 
     auto* stCell = MakeCell(status);
+    stCell->setData(Qt::UserRole + 1, static_cast<int>(ver_info.status));
     tableAvailableProviders_->setItem(row, 3, stCell);
 
     const QString readme_url = QString::fromStdString(entry.readme_url);
@@ -542,6 +574,7 @@ void ResourcePage::populateRemoteAdapters(
   tableAvailableAdapters_->setRowCount(0);
   CoreConfig config = ConfigManager::Get().Load();
   auto i18n_map = I18nCache::Get().GetMap();
+  const auto manifest = vinput::registry::InstalledManifest::Load();
 
   for (const auto& entry : adapters) {
     QString id = QString::fromStdString(entry.id);
@@ -557,10 +590,29 @@ void ResourcePage::populateRemoteAdapters(
     tableAvailableAdapters_->setItem(row, 0, MakeCell(title, id));
     tableAvailableAdapters_->setItem(row, 1, MakeCell(desc));
 
-    bool installed = ResolveLlmAdapter(config, entry.id) != nullptr;
-    QString status = installed ? tr("installed") : tr("available");
+    const bool installed = ResolveLlmAdapter(config, entry.id) != nullptr;
+    const auto ver_info = vinput::script::CheckResourceVersion(
+        manifest, vinput::script::Kind::kLlmAdapter, entry, installed);
+
+    QString status = tr("available");
+    if (installed) {
+      if (ver_info.status == vinput::script::UpdateStatus::kUpdateAvailable) {
+        if (!ver_info.installed_version.empty() && !ver_info.remote_version.empty()) {
+          status = tr("update available (%1 -> %2)")
+                       .arg(QString::fromStdString(ver_info.installed_version),
+                            QString::fromStdString(ver_info.remote_version));
+        } else {
+          status = tr("update available");
+        }
+      } else if (!ver_info.installed_version.empty()) {
+        status = tr("installed (%1)").arg(QString::fromStdString(ver_info.installed_version));
+      } else {
+        status = tr("installed");
+      }
+    }
 
     auto* stCell = MakeCell(status);
+    stCell->setData(Qt::UserRole + 1, static_cast<int>(ver_info.status));
     tableAvailableAdapters_->setItem(row, 2, stCell);
 
     const QString readme_url = QString::fromStdString(entry.readme_url);
@@ -916,10 +968,83 @@ void ResourcePage::onAddProviderClicked() {
   downloadWorker_->start();
 }
 
+void ResourcePage::onUpdateProviderClicked() {
+  auto items = tableAvailableProviders_->selectedItems();
+  if (items.isEmpty()) {
+    return;
+  }
+  auto* name_item = tableAvailableProviders_->item(tableAvailableProviders_->currentRow(), 0);
+  if (name_item == nullptr) {
+    return;
+  }
+  QString id = name_item->data(Qt::UserRole).toString();
+  QString title = name_item->text();
+  if (title.isEmpty()) {
+    title = id;
+  }
+
+  abortDownload();
+  btnUpdateProvider_->setEnabled(false);
+
+  downloadWorker_ = new DownloadWorker(this);
+  connect(downloadWorker_, &DownloadWorker::error, this, &ResourcePage::onDownloadError);
+  auto updateSucceeded = std::make_shared<std::atomic_bool>(false);
+  connect(downloadWorker_, &QThread::finished, this, [this, id, updateSucceeded]() {
+    onDownloadFinished();
+    if (!updateSucceeded->load()) {
+      return;
+    }
+    const CoreConfig config = ConfigManager::Get().Load();
+    if (config.asr.activeProvider == id.toStdString()) {
+      RunReloadAsrBackendAsync(this, [this](bool ok, const std::string& err) {
+        if (!ok) {
+          textLog_->append(tr("Warning: config saved, but failed to reload ASR backend: %1")
+                               .arg(QString::fromStdString(err)));
+        }
+      });
+    }
+  });
+
+  const CoreConfig config = ConfigManager::Get().Load();
+
+  downloadWorker_->SetTask([config, id, updateSucceeded](std::string* err) -> bool {
+    auto urls = ResolveAsrProviderRegistryUrls(config);
+    auto entries =
+        vinput::script::FetchRegistry(config, vinput::script::Kind::kAsrProvider, urls, err);
+    if (!err->empty()) {
+      return false;
+    }
+
+    auto it = std::find_if(entries.begin(), entries.end(),
+                           [&](const auto& e) { return e.id == id.toStdString(); });
+    if (it == entries.end()) {
+      *err = "Provider not found in registry.";
+      return false;
+    }
+
+    std::filesystem::path scriptPath;
+    if (!vinput::script::DownloadScript(*it, vinput::script::Kind::kAsrProvider, &scriptPath,
+                                        err)) {
+      return false;
+    }
+
+    CoreConfig mutConfig = config;
+    if (!vinput::script::MaterializeAsrProvider(&mutConfig, *it, scriptPath, err)) {
+      return false;
+    }
+    const bool saved = ConfigManager::Get().Save(mutConfig);
+    updateSucceeded->store(saved);
+    return saved;
+  });
+  textLog_->append(tr("Updating provider %1...").arg(title));
+  downloadWorker_->start();
+}
+
 void ResourcePage::onAddAdapterClicked() {
   auto items = tableAvailableAdapters_->selectedItems();
-  if (items.isEmpty())
+  if (items.isEmpty()) {
     return;
+  }
   auto* name_item = tableAvailableAdapters_->item(tableAvailableAdapters_->currentRow(), 0);
   QString id = name_item->data(Qt::UserRole).toString();
   QString title = name_item->text();
@@ -965,16 +1090,108 @@ void ResourcePage::onAddAdapterClicked() {
   downloadWorker_->start();
 }
 
+void ResourcePage::onUpdateAdapterClicked() {
+  auto items = tableAvailableAdapters_->selectedItems();
+  if (items.isEmpty()) {
+    return;
+  }
+  auto* name_item = tableAvailableAdapters_->item(tableAvailableAdapters_->currentRow(), 0);
+  if (name_item == nullptr) {
+    return;
+  }
+  QString id = name_item->data(Qt::UserRole).toString();
+  QString title = name_item->text();
+  if (title.isEmpty()) {
+    title = id;
+  }
+
+  abortDownload();
+  btnUpdateAdapter_->setEnabled(false);
+
+  downloadWorker_ = new DownloadWorker(this);
+  connect(downloadWorker_, &DownloadWorker::error, this, &ResourcePage::onDownloadError);
+  connect(downloadWorker_, &QThread::finished, this, &ResourcePage::onDownloadFinished);
+
+  const CoreConfig config = ConfigManager::Get().Load();
+
+  downloadWorker_->SetTask([config, id](std::string* err) -> bool {
+    auto urls = ResolveLlmAdapterRegistryUrls(config);
+    auto entries =
+        vinput::script::FetchRegistry(config, vinput::script::Kind::kLlmAdapter, urls, err);
+    if (!err->empty()) {
+      return false;
+    }
+
+    auto it = std::find_if(entries.begin(), entries.end(),
+                           [&](const auto& e) { return e.id == id.toStdString(); });
+    if (it == entries.end()) {
+      *err = "Adapter not found in registry.";
+      return false;
+    }
+
+    const bool was_running = vinput::adapter::IsRunning(id.toStdString());
+    bool stopped = false;
+    if (was_running) {
+      vinput::cli::DbusClient dbus;
+      std::string stop_err;
+      if (!dbus.StopAdapter(id.toStdString(), &stop_err)) {
+        *err = stop_err.empty() ? "Failed to stop adapter." : stop_err;
+        return false;
+      }
+      stopped = true;
+    }
+
+    auto restart = [&]() -> bool {
+      if (!stopped) {
+        return true;
+      }
+      vinput::cli::DbusClient dbus;
+      std::string start_err;
+      if (!dbus.StartAdapter(id.toStdString(), &start_err)) {
+        if (!err->empty()) {
+          *err += "; ";
+        }
+        *err += start_err.empty() ? "Failed to restart adapter." : start_err;
+        return false;
+      }
+      return true;
+    };
+
+    std::filesystem::path scriptPath;
+    if (!vinput::script::DownloadScript(*it, vinput::script::Kind::kLlmAdapter, &scriptPath, err)) {
+      restart();
+      return false;
+    }
+
+    CoreConfig mutConfig = config;
+    if (!vinput::script::MaterializeLlmAdapter(&mutConfig, *it, scriptPath, err)) {
+      restart();
+      return false;
+    }
+    if (!ConfigManager::Get().Save(mutConfig)) {
+      *err = "Failed to save configuration.";
+      restart();
+      return false;
+    }
+
+    return restart();
+  });
+  textLog_->append(tr("Updating adapter %1...").arg(title));
+  downloadWorker_->start();
+}
+
 void ResourcePage::updateProviderButtons() {
   const int row = tableAvailableProviders_->currentRow();
   if (row < 0 || row >= tableAvailableProviders_->rowCount()) {
     btnAddProvider_->setEnabled(false);
+    btnUpdateProvider_->setEnabled(false);
     btnRemoveProvider_->setEnabled(false);
     return;
   }
   auto* item = tableAvailableProviders_->item(row, 0);
   if (item == nullptr) {
     btnAddProvider_->setEnabled(false);
+    btnUpdateProvider_->setEnabled(false);
     btnRemoveProvider_->setEnabled(false);
     return;
   }
@@ -982,6 +1199,7 @@ void ResourcePage::updateProviderButtons() {
   const CoreConfig config = ConfigManager::Get().Load();
   const bool installed = ResolveAsrProvider(config, id.toStdString()) != nullptr;
   btnAddProvider_->setEnabled(!installed);
+  btnUpdateProvider_->setEnabled(installed);
   btnRemoveProvider_->setEnabled(installed);
 }
 
@@ -989,12 +1207,14 @@ void ResourcePage::updateAdapterButtons() {
   const int row = tableAvailableAdapters_->currentRow();
   if (row < 0 || row >= tableAvailableAdapters_->rowCount()) {
     btnAddAdapter_->setEnabled(false);
+    btnUpdateAdapter_->setEnabled(false);
     btnRemoveAdapter_->setEnabled(false);
     return;
   }
   auto* item = tableAvailableAdapters_->item(row, 0);
   if (item == nullptr) {
     btnAddAdapter_->setEnabled(false);
+    btnUpdateAdapter_->setEnabled(false);
     btnRemoveAdapter_->setEnabled(false);
     return;
   }
@@ -1002,6 +1222,7 @@ void ResourcePage::updateAdapterButtons() {
   const CoreConfig config = ConfigManager::Get().Load();
   const bool installed = ResolveLlmAdapter(config, id.toStdString()) != nullptr;
   btnAddAdapter_->setEnabled(!installed);
+  btnUpdateAdapter_->setEnabled(installed);
   btnRemoveAdapter_->setEnabled(installed);
 }
 
@@ -1043,17 +1264,18 @@ void ResourcePage::onRemoveProviderClicked() {
     config.asr.activeProvider.clear();
   }
 
+  if (!ConfigManager::Get().Save(config)) {
+    QMessageBox::critical(this, tr("Error"), tr("Failed to save config."));
+    return;
+  }
+
   const auto managed_path =
       vinput::script::DefaultLocalScriptPath(vinput::script::Kind::kAsrProvider, id.toStdString());
   if (!managed_path.empty()) {
     std::error_code ec;
     std::filesystem::remove(managed_path, ec);
   }
-
-  if (!ConfigManager::Get().Save(config)) {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to save config."));
-    return;
-  }
+  vinput::script::UnregisterInstalledScript(id.toStdString());
   textLog_->append(tr("Removed ASR provider %1.").arg(title));
   refreshAll();
   emit configChanged();
@@ -1103,17 +1325,18 @@ void ResourcePage::onRemoveAdapterClicked() {
   }
   config.llm.adapters.erase(it, config.llm.adapters.end());
 
+  if (!ConfigManager::Get().Save(config)) {
+    QMessageBox::critical(this, tr("Error"), tr("Failed to save config."));
+    return;
+  }
+
   const auto managed_path =
       vinput::script::DefaultLocalScriptPath(vinput::script::Kind::kLlmAdapter, id.toStdString());
   if (!managed_path.empty()) {
     std::error_code ec;
     std::filesystem::remove(managed_path, ec);
   }
-
-  if (!ConfigManager::Get().Save(config)) {
-    QMessageBox::critical(this, tr("Error"), tr("Failed to save config."));
-    return;
-  }
+  vinput::script::UnregisterInstalledScript(id.toStdString());
   textLog_->append(tr("Removed LLM adapter %1.").arg(title));
   refreshAll();
   emit configChanged();
