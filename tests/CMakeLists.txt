@@ -115,7 +115,20 @@ target_link_libraries(test_process_utils PRIVATE
 
 add_test(NAME test_process_utils COMMAND test_process_utils)
 
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
-add_test(NAME test_config_migrate_script
-    COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tests/test_migrate.py
+add_executable(test_config_migration
+    test_config_migration.cpp
 )
+
+target_include_directories(test_config_migration PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_config_migration PRIVATE
+    CMAKE_SOURCE_DIR_STR="${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_config_migration PRIVATE
+    common
+)
+
+add_test(NAME test_config_migration COMMAND test_config_migration)
