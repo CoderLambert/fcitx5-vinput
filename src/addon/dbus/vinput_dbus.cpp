@@ -509,9 +509,14 @@ void VinputEngine::ensureStatusSync() {
 }
 
 void VinputEngine::stopStatusSyncIfIdle() {
-  if (status_sync_event_ && !(session_.has_value() || status_ic_ != nullptr)) {
+  if (session_.has_value() || status_ic_ != nullptr) {
+    return;
+  }
+  if (status_sync_event_) {
     status_sync_event_->setEnabled(false);
   }
+  status_poll_gate_.Cancel();
+  pending_status_call_slot_.reset();
 }
 
 void VinputEngine::enterPendingStartState(fcitx::InputContext* ic, const fcitx::Key& trigger,
@@ -520,6 +525,7 @@ void VinputEngine::enterPendingStartState(fcitx::InputContext* ic, const fcitx::
     return;
   }
   rememberInputContext(ic);
+  status_poll_gate_.Invalidate(); // A prior session's delayed status is stale.
   if (status_ic_ && status_ic_ != ic) {
     clearVoicePresentation(status_ic_);
   }
@@ -637,6 +643,7 @@ void VinputEngine::enterBusyState(fcitx::InputContext* ic, bool command_mode,
 }
 
 void VinputEngine::finishFrontendSession(fcitx::InputContext* fallback_ic) {
+  status_poll_gate_.Invalidate();
   auto* ic = session_ ? session_->ic : (fallback_ic ? fallback_ic : status_ic_);
   session_.reset();
   polled_idle_since_.reset();
@@ -801,25 +808,56 @@ void VinputEngine::clearDaemonSyncFailure() {
   daemon_sync_blocked_until_ = std::chrono::steady_clock::time_point{};
 }
 
-void VinputEngine::syncFrontendWithDaemonStatus(fcitx::InputContext* fallback_ic,
-                                                bool prefer_command_mode) {
-  const std::string status = queryDaemonStatus();
-  if (status.empty()) {
+void VinputEngine::syncFrontendWithDaemonStatus() {
+  if (!bus_ || !daemonSyncAllowed()) {
     return;
   }
-
-  if (status == kStatusIdle && session_) {
-    const auto now = std::chrono::steady_clock::now();
-    if (!polled_idle_since_) {
-      polled_idle_since_ = now;
-    }
-    if (now - *polled_idle_since_ < kPolledIdleRecoveryDelay) {
-      return;
-    }
+  const auto ticket = status_poll_gate_.TryBegin();
+  if (!ticket) {
+    return; // Exactly one status query may be pending.
   }
-  polled_idle_since_.reset();
 
-  applyDaemonStatusLocally(status, fallback_ic, prefer_command_mode);
+  auto msg = bus_->createMethodCall(kBusName, kObjectPath, kInterface, kMethodGetStatus);
+  const std::weak_ptr<bool> token = lifetime_token_;
+  pending_status_call_slot_ = msg.callAsync(
+      vinput::runtime::kDbusCallTimeoutUsec,
+      [this, token, ticket = *ticket](fcitx::dbus::Message& reply) {
+        if (token.expired() || !status_poll_gate_.IsActive(ticket)) {
+          return true;
+        }
+        auto slot = std::move(pending_status_call_slot_);
+        if (!status_poll_gate_.Complete(ticket)) {
+          return true; // A newer session or status signal superseded this query.
+        }
+        if (!reply || reply.isError()) {
+          noteDaemonSyncFailure();
+          return true;
+        }
+        clearDaemonSyncFailure();
+        std::string status;
+        reply >> status;
+        last_known_daemon_status_ = status;
+        if (status.empty() || (!session_ && status_ic_ == nullptr)) {
+          return true;
+        }
+
+        if (status == kStatusIdle && session_) {
+          const auto now = std::chrono::steady_clock::now();
+          if (!polled_idle_since_) {
+            polled_idle_since_ = now;
+          }
+          if (now - *polled_idle_since_ < kPolledIdleRecoveryDelay) {
+            return true;
+          }
+        }
+        polled_idle_since_.reset();
+        applyDaemonStatusLocally(status);
+        return true;
+      });
+  if (!pending_status_call_slot_) {
+    status_poll_gate_.Cancel();
+    noteDaemonSyncFailure();
+  }
 }
 
 void VinputEngine::applyDaemonStatusLocally(const std::string& status,
@@ -984,6 +1022,8 @@ void VinputEngine::handleRecognitionPartial(const std::string& transcript_text) 
 }
 
 void VinputEngine::onStatusChanged(fcitx::dbus::Message& msg) {
+  // StatusChanged is more current than any previously scheduled GetStatus.
+  status_poll_gate_.Invalidate();
   std::string status;
   msg >> status;
   last_known_daemon_status_ = status;

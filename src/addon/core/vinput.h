@@ -25,6 +25,7 @@
 #include "common/asr/recognition_result.h"
 #include "common/config/vinput_config.h"
 #include "common/dbus/dbus_interface.h"
+#include "dbus/status_poll_gate.h"
 #include "common/dbus/error_info.h"
 #include "common/scene/postprocess_scene.h"
 
@@ -105,8 +106,7 @@ private:
   void enterBusyState(fcitx::InputContext* ic, bool command_mode, const std::string& preedit_text,
                       bool postprocessing = false, std::optional<bool> raw_prev = std::nullopt);
   void finishFrontendSession(fcitx::InputContext* fallback_ic = nullptr);
-  void syncFrontendWithDaemonStatus(fcitx::InputContext* fallback_ic = nullptr,
-                                    bool prefer_command_mode = false);
+  void syncFrontendWithDaemonStatus();
   void rememberInputContext(fcitx::InputContext* ic);
   fcitx::InputContext*
   resolveFrontendInputContext(fcitx::InputContext* fallback_ic = nullptr) const;
@@ -131,6 +131,8 @@ private:
   std::unique_ptr<fcitx::dbus::Slot> error_slot_;
   std::unique_ptr<fcitx::dbus::Slot> pending_start_call_slot_;
   std::unique_ptr<fcitx::dbus::Slot> pending_stop_call_slot_;
+  std::unique_ptr<fcitx::dbus::Slot> pending_status_call_slot_;
+  vinput::addon::StatusPollGate status_poll_gate_;
   struct Session {
     enum class Phase : std::uint8_t { PendingStart, Recording, Inferring, Postprocessing };
     Phase phase;
