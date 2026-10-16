@@ -1,4 +1,5 @@
 #include "audio_capture.h"
+#include "daemon/audio/captured_pcm_transfer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -560,9 +561,7 @@ std::vector<int16_t> AudioCapture::StopAndGetBuffer() {
     DestroyStream();
   }
   std::lock_guard<std::mutex> lock(buffer_mutex_);
-  auto result = pcm_buffer_;
-  pcm_buffer_.clear();
-  return result;
+  return vinput::audio::TakeCapturedPcm(pcm_buffer_);
 }
 
 void AudioCapture::Stop() {
