@@ -469,8 +469,9 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
     return;
   }
 
-  // Apply gain at the device boundary so all backends see processed audio.
-  std::vector<int16_t> gained_pcm(pcm.begin(), pcm.end());
+  // Avoid allocating or copying audio at the default (unity) gain.
+  // The view never escapes this synchronous PipeWire callback.
+  std::vector<int16_t> gained_pcm;
   std::shared_ptr<vinput::daemon::asr::RecognitionSession> session;
   std::vector<int16_t> chunk_to_push;
   std::optional<std::chrono::steady_clock::time_point> recording_started_at;
@@ -482,10 +483,8 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
       return;
     }
     session = active_session_;
-    if (current_input_gain_ != 1.0f) {
-      vinput::audio::ApplyGainI16(gained_pcm, current_input_gain_);
-    }
-    const std::span<const int16_t> pcm_view(gained_pcm);
+    const auto pcm_view =
+        vinput::audio::PrepareGainAdjustedInput(pcm, current_input_gain_, &gained_pcm);
 
     if (!first_non_silent_at_.has_value() && HasNonSilentAudio(pcm_view)) {
       first_non_silent_at_ = std::chrono::steady_clock::now();
