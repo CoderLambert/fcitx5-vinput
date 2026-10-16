@@ -24,6 +24,7 @@ find_package(Fcitx5ModuleNotifications REQUIRED)
 add_executable(modifier_key_tests
     modifier_key_tests.cpp
     ${CMAKE_SOURCE_DIR}/src/addon/core/vinput.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/core/context_writer.cpp
     ${CMAKE_SOURCE_DIR}/src/addon/dbus/vinput_dbus.cpp
     ${CMAKE_SOURCE_DIR}/src/addon/input/vinput_keyevent.cpp
     ${CMAKE_SOURCE_DIR}/src/addon/menu/palette_command.cpp
@@ -50,6 +51,7 @@ target_link_libraries(modifier_key_tests PRIVATE
     Fcitx5::Module::Clipboard
     Fcitx5::Module::Notifications
     ${SDBUS_LIBRARIES}
+    pthread
 )
 
 add_test(NAME modifier_key_tests COMMAND modifier_key_tests)
@@ -132,3 +134,13 @@ target_link_libraries(test_config_migration PRIVATE
 )
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
+
+add_executable(test_async_context_writer
+    test_async_context_writer.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/core/context_writer.cpp
+)
+target_include_directories(test_async_context_writer PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+)
+target_link_libraries(test_async_context_writer PRIVATE pthread)
+add_test(NAME test_async_context_writer COMMAND test_async_context_writer)
