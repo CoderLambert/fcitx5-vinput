@@ -1,6 +1,8 @@
 #include "daemon/asr/backends/sherpa_streaming_backend.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -9,10 +11,12 @@
 #include <vector>
 
 #include "common/asr/model_manager.h"
+#include "common/utils/debug_log.h"
 #include "common/i18n.h"
 #include "common/utils/string_utils.h"
 
 #include "daemon/asr/asr_config.h"
+#include "daemon/asr/streaming_diagnostic_policy.h"
 #include "daemon/asr/hotword_utils.h"
 #include "daemon/asr/sherpa_json_helpers.h"
 
@@ -105,8 +109,11 @@ public:
     for (std::size_t i = 0; i < pcm.size(); ++i) {
       samples[i] = static_cast<float>(pcm[i]) / 32768.0f;
     }
-    UpdateAudioStats(samples);
-    AppendDebugPcm(samples);
+    if (diagnostics_enabled_) {
+      const auto prefix = DiagnosticSamplePrefix(debug_pcm_.size(), samples);
+      UpdateAudioStats(prefix);
+      AppendDebugPcm(prefix);
+    }
 
     SherpaOnnxOnlineStreamAcceptWaveform(stream_, 16000, samples.data(),
                                          static_cast<int32_t>(samples.size()));
@@ -138,22 +145,23 @@ public:
     DecodeAvailable();
 
     std::string text = GetCurrentText();
-    fprintf(stderr, "vinput: streaming finish current result bytes=%zu\n", text.size());
+    vinput::debug::Log("streaming finish current result bytes=%zu\n", text.size());
     if (!text.empty()) {
       if (text != last_partial_text_) {
         events_.push_back({RecognitionEventKind::PartialText, text, {}});
         last_partial_text_ = text;
       }
       events_.push_back({RecognitionEventKind::FinalText, std::move(text), {}});
-      fprintf(stderr, "vinput: streaming queued final result\n");
-    } else {
+      vinput::debug::Log("streaming queued final result\n");
+    } else if (diagnostics_enabled_) {
       const double rms = total_samples_ > 0 ? std::sqrt(sum_squares_ / total_samples_) : 0.0;
       const bool dumped = DumpDebugWav("/tmp/vinput-streaming-last-empty.wav", debug_pcm_, 16000);
       fprintf(stderr,
-              "vinput: streaming finish produced empty text samples=%zu "
-              "peak=%.4f rms=%.4f dumped_wav=%s path=%s\n",
-              total_samples_, peak_abs_, rms, dumped ? "true" : "false",
-              "/tmp/vinput-streaming-last-empty.wav");
+              "vinput: streaming diagnostic empty text collected_samples=%zu "
+              "peak=%.4f rms=%.4f truncated=%s dumped_wav=%s path=%s\n",
+              total_samples_, peak_abs_, rms,
+              total_samples_ >= kMaxStreamingDiagnosticSamples ? "true" : "false",
+              dumped ? "true" : "false", "/tmp/vinput-streaming-last-empty.wav");
     }
     events_.push_back({RecognitionEventKind::Completed, {}, {}});
 
@@ -204,13 +212,13 @@ private:
       std::string text = GetCurrentText();
       if (!text.empty() && text != last_partial_text_) {
         last_partial_text_ = text;
-        fprintf(stderr, "vinput: streaming partial result bytes=%zu decode_iterations=%d\n",
-                text.size(), decode_iterations);
+        vinput::debug::Log("streaming partial result bytes=%zu decode_iterations=%d\n",
+                           text.size(), decode_iterations);
         events_.push_back({RecognitionEventKind::PartialText, text, {}});
       }
     }
     if (decode_iterations > 0) {
-      fprintf(stderr, "vinput: streaming decode loop completed iterations=%d\n", decode_iterations);
+      vinput::debug::Log("streaming decode loop completed iterations=%d\n", decode_iterations);
     }
   }
 
@@ -218,7 +226,7 @@ private:
     const SherpaOnnxOnlineRecognizerResult* result =
         SherpaOnnxGetOnlineStreamResult(recognizer_, stream_);
     if (!result) {
-      fprintf(stderr, "vinput: streaming result unavailable\n");
+      vinput::debug::Log("streaming result unavailable\n");
       return {};
     }
 
@@ -226,8 +234,8 @@ private:
     if (result->text) {
       text = vinput::str::TrimAsciiWhitespace(result->text);
     }
-    fprintf(stderr, "vinput: streaming current result bytes=%zu token_count=%d\n", text.size(),
-            result->count);
+    vinput::debug::Log("streaming current result bytes=%zu token_count=%d\n", text.size(),
+                       result->count);
     SherpaOnnxDestroyOnlineRecognizerResult(result);
     return text;
   }
@@ -243,6 +251,8 @@ private:
   const SherpaOnnxOnlineRecognizer* recognizer_ = nullptr;
   const SherpaOnnxOnlineStream* stream_ = nullptr;
   bool finished_ = false;
+  const bool diagnostics_enabled_ =
+      StreamingAudioDiagnosticsEnabled(std::getenv("VINPUT_STREAMING_AUDIO_DIAGNOSTICS"));
   std::size_t total_samples_ = 0;
   double peak_abs_ = 0.0;
   double sum_squares_ = 0.0;
