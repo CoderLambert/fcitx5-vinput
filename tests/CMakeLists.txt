@@ -132,3 +132,7 @@ target_link_libraries(test_config_migration PRIVATE
 )
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
+
+add_executable(test_status_poll_gate test_status_poll_gate.cpp)
+target_include_directories(test_status_poll_gate PRIVATE ${CMAKE_SOURCE_DIR}/src/addon)
+add_test(NAME test_status_poll_gate COMMAND test_status_poll_gate)
