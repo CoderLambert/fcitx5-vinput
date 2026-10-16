@@ -4,6 +4,7 @@ find_package(Fcitx5ModuleNotifications REQUIRED)
 
 add_library(addon MODULE
     core/vinput.cpp
+    core/context_writer.cpp
     dbus/vinput_dbus.cpp
     input/vinput_keyevent.cpp
     menu/palette_command.cpp
@@ -24,6 +25,7 @@ target_link_libraries(addon PRIVATE
     Fcitx5::Module::Clipboard
     Fcitx5::Module::Notifications
     ${SDBUS_LIBRARIES}
+    pthread
 )
 target_include_directories(addon PRIVATE
     ${CMAKE_SOURCE_DIR}/src

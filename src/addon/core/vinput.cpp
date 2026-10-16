@@ -22,6 +22,7 @@
 #include "common/utils/sandbox.h"
 #include "common/utils/string_utils.h"
 
+#include "core/context_writer.h"
 #include "dbus/notifier_dbus_object.h"
 
 using namespace vinput::dbus;
@@ -202,6 +203,7 @@ VinputEngine::~VinputEngine() {
   lifetime_token_.reset();
 
   flushContextBuffer();
+  context_writer_.reset(); // Persist all queued entries before addon teardown.
   context_flush_timer_.reset();
   status_sync_event_.reset();
   pending_stop_event_.reset();
@@ -302,52 +304,21 @@ void VinputEngine::appendContextEntry(const std::string& text, const char* sourc
   if (source && std::string_view(source) != kContextSourceUser && !context_buffer_text_.empty()) {
     flushContextBuffer();
   }
-  const auto path = vinput::path::ContextCachePath();
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  if (ec) {
-    return;
-  }
-
   nlohmann::json entry;
   entry["text"] = text;
   entry["source"] = source ? source : kContextSourceUser;
   entry["timestamp"] = CurrentUnixTimestamp();
-  {
-    std::ofstream ofs(path, std::ios::app);
-    if (ofs) {
-      ofs << entry.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';
-    }
-  }
 
-  constexpr int kTruncateInterval = 100;
-  const int keep_lines = max_context_lines_ > 0 ? max_context_lines_ : 0;
-  if (keep_lines > 0 && ++commit_write_count_ >= kTruncateInterval) {
-    commit_write_count_ = 0;
-    std::ifstream ifs(path);
-    if (!ifs) {
-      return;
-    }
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(ifs, line)) {
-      if (!line.empty()) {
-        lines.push_back(std::move(line));
-      }
-    }
-    ifs.close();
-    if (static_cast<int>(lines.size()) > keep_lines) {
-      const auto start = lines.end() - keep_lines;
-      const auto tmp = path.string() + ".tmp";
-      std::ofstream ofs_tmp(tmp, std::ios::trunc);
-      if (ofs_tmp) {
-        for (auto it = start; it != lines.end(); ++it) {
-          ofs_tmp << *it << '\n';
-        }
-        ofs_tmp.close();
-        std::filesystem::rename(tmp, path, ec);
-      }
-    }
+  if (!context_writer_) {
+    context_writer_ =
+        std::make_unique<vinput::addon::AsyncContextWriter>(vinput::path::ContextCachePath());
+  }
+  if (!context_writer_->Enqueue(
+          entry.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),
+          max_context_lines_)) {
+    // The queue is deliberately bounded. Do not silently discard context
+    // when the disk cannot keep up with incoming input history.
+    FCITX_LOG(Error) << "vinput: context persistence backlog exceeded its capacity";
   }
 }
 
