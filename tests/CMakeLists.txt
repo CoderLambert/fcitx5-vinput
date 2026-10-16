@@ -132,3 +132,11 @@ target_link_libraries(test_config_migration PRIVATE
 )
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
+
+add_executable(test_async_recognition_session
+    test_async_recognition_session.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/asr/runtime/async_recognition_session.cpp
+)
+target_include_directories(test_async_recognition_session PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_async_recognition_session PRIVATE pthread)
+add_test(NAME test_async_recognition_session COMMAND test_async_recognition_session)
