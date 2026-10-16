@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -223,6 +224,63 @@ void TestCancelReapsChild() {
   AssertChildAlreadyReaped(child_pid);
 }
 
+
+/** A non-reading Provider must not trap PushAudio or Cancel indefinitely. */
+void TestStalledProviderWriteIsBounded() {
+  const std::string pid_file = GetUniquePidFilePath(7);
+  unlink(pid_file.c_str());
+
+  CommandAsrProvider provider;
+  provider.id = "test-stalled-write-provider";
+  provider.command = "/bin/sh";
+  provider.args = {"-c", "echo $ > " + pid_file + " && exec sleep 30"};
+  provider.timeoutMs = 250;
+
+  std::string error;
+  auto backend = vinput::daemon::asr::CreateCommandStreamingBackend(provider, &error);
+  ExpectTrue(backend != nullptr, "CreateCommandStreamingBackend failed: " + error);
+  auto session = backend->CreateSession(&error);
+  ExpectTrue(session != nullptr, "CreateSession failed: " + error);
+
+  std::vector<int16_t> long_chunk(100000, 512);
+  ExpectTrue(session->PushAudio(long_chunk, &error), "first PushAudio should queue samples");
+  const int child_pid = ReadPidFileWithRetry(pid_file);
+  ExpectTrue(child_pid > 0, "stalled provider did not start");
+
+  const auto started = std::chrono::steady_clock::now();
+  alarm(6); // Test watchdog: the pre-fix code would never return from this send.
+  const bool ok = session->PushAudio({}, &error);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  ExpectTrue(!ok && !error.empty(), "a filled provider pipe must eventually report failure");
+  ExpectTrue(elapsed < std::chrono::seconds(2), "outbound write must respect its timeout");
+
+  session->Cancel(); // A best-effort notification must not delay process teardown forever.
+  alarm(0);
+  AssertChildAlreadyReaped(child_pid);
+}
+
+/** Cancel of a never-started session must not spawn a new child. */
+void TestCancelDoesNotStartProvider() {
+  const std::string marker = GetUniquePidFilePath(8);
+  unlink(marker.c_str());
+
+  CommandAsrProvider provider;
+  provider.id = "test-never-started-cancel";
+  provider.command = "/bin/sh";
+  provider.args = {"-c", "echo started > " + marker + "; exec sleep 30"};
+  provider.timeoutMs = 250;
+
+  std::string error;
+  auto backend = vinput::daemon::asr::CreateCommandStreamingBackend(provider, &error);
+  ExpectTrue(backend != nullptr, "CreateCommandStreamingBackend failed");
+  auto session = backend->CreateSession(&error);
+  ExpectTrue(session != nullptr, "CreateSession failed");
+  session->Cancel();
+  const bool started = access(marker.c_str(), F_OK) == 0;
+  unlink(marker.c_str());
+  ExpectTrue(!started, "Cancel must not spawn a provider solely to stop it");
+}
+
 } // namespace
 
 int main() {
@@ -231,6 +289,8 @@ int main() {
   TestDestructionReapsChild();
   TestFinalTextSessionReapsChild();
   TestCancelReapsChild();
+  TestStalledProviderWriteIsBounded();
+  TestCancelDoesNotStartProvider();
   std::cout << "All command streaming process lifecycle tests passed successfully!\n";
   return 0;
 }
