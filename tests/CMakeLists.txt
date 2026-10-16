@@ -132,7 +132,7 @@ target_link_libraries(test_config_migration PRIVATE
 )
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
- 
+
 add_executable(test_diagnostic_pcm test_diagnostic_pcm.cpp)
 target_include_directories(test_diagnostic_pcm PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_diagnostic_pcm COMMAND test_diagnostic_pcm)
