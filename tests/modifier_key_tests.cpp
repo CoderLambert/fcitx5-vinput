@@ -10,6 +10,7 @@
 #include <fcitx/instance.h>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -191,6 +192,17 @@ void runAllTests() {
   engine.handleKeyEvent(close_shift_r);
   expect(close_shift_r.filtered() && close_shift_r.accepted(),
          "Close Shift_R release is consumed and closes palette");
+
+  std::cout << "--- 6. Testing VinputEngine lifetime_token_ UAF Guard ---\n";
+  std::weak_ptr<bool> token;
+  {
+    const VinputEngine scoped_engine(&instance);
+    token = scoped_engine.lifetimeToken();
+    expect(!token.expired(), "lifetimeToken must be valid while engine is alive");
+    auto shared = token.lock();
+    expect(shared != nullptr && *shared, "lifetimeToken payload must be true");
+  }
+  expect(token.expired(), "lifetimeToken must expire immediately upon engine destruction");
 
   std::cout << "\n✅ ALL TRIGGER TESTS PASSED CLEANLY!\n";
 }

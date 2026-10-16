@@ -2,8 +2,10 @@
 #include <cstdio>
 #include <fcitx-utils/dbus/matchrule.h>
 #include <fcitx-utils/dbus/message.h>
+#include <fcitx-utils/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputpanel.h>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -309,30 +311,44 @@ void VinputEngine::setupDBusWatcher() {
   if (!bus_)
     return;
 
+  const std::weak_ptr<bool> token = lifetime_token_;
+
   fcitx::dbus::MatchRule result_rule(kBusName, kObjectPath, kInterface, kSignalRecognitionResult);
 
-  result_slot_ = bus_->addMatch(result_rule, [this](fcitx::dbus::Message& msg) {
+  result_slot_ = bus_->addMatch(result_rule, [this, token](fcitx::dbus::Message& msg) {
+    if (token.expired()) {
+      return true;
+    }
     onRecognitionResult(msg);
     return true;
   });
 
   fcitx::dbus::MatchRule partial_rule(kBusName, kObjectPath, kInterface, kSignalRecognitionPartial);
 
-  partial_slot_ = bus_->addMatch(partial_rule, [this](fcitx::dbus::Message& msg) {
+  partial_slot_ = bus_->addMatch(partial_rule, [this, token](fcitx::dbus::Message& msg) {
+    if (token.expired()) {
+      return true;
+    }
     onRecognitionPartial(msg);
     return true;
   });
 
   fcitx::dbus::MatchRule status_rule(kBusName, kObjectPath, kInterface, kSignalStatusChanged);
 
-  status_slot_ = bus_->addMatch(status_rule, [this](fcitx::dbus::Message& msg) {
+  status_slot_ = bus_->addMatch(status_rule, [this, token](fcitx::dbus::Message& msg) {
+    if (token.expired()) {
+      return true;
+    }
     onStatusChanged(msg);
     return true;
   });
 
   fcitx::dbus::MatchRule error_rule(kBusName, kObjectPath, kInterface, kSignalDaemonNotification);
 
-  error_slot_ = bus_->addMatch(error_rule, [this](fcitx::dbus::Message& msg) {
+  error_slot_ = bus_->addMatch(error_rule, [this, token](fcitx::dbus::Message& msg) {
+    if (token.expired()) {
+      return true;
+    }
     onDaemonNotification(msg);
     return true;
   });
@@ -346,8 +362,12 @@ bool VinputEngine::callStartRecording() {
     return false;
   }
   auto msg = bus_->createMethodCall(kBusName, kObjectPath, kInterface, kMethodStartRecording);
-  pending_start_call_slot_ =
-      msg.callAsync(vinput::runtime::kDbusCallTimeoutUsec, [this](fcitx::dbus::Message& reply) {
+  const std::weak_ptr<bool> token = lifetime_token_;
+  pending_start_call_slot_ = msg.callAsync(
+      vinput::runtime::kDbusCallTimeoutUsec, [this, token](fcitx::dbus::Message& reply) {
+        if (token.expired()) {
+          return true;
+        }
         auto slot = std::move(pending_start_call_slot_);
         if (!reply || reply.isError()) {
           noteDaemonSyncFailure();
@@ -382,8 +402,12 @@ bool VinputEngine::callStartCommandRecording(const std::string& selected_text) {
   auto msg =
       bus_->createMethodCall(kBusName, kObjectPath, kInterface, kMethodStartCommandRecording);
   msg << selected_text;
-  pending_start_call_slot_ =
-      msg.callAsync(vinput::runtime::kDbusCallTimeoutUsec, [this](fcitx::dbus::Message& reply) {
+  const std::weak_ptr<bool> token = lifetime_token_;
+  pending_start_call_slot_ = msg.callAsync(
+      vinput::runtime::kDbusCallTimeoutUsec, [this, token](fcitx::dbus::Message& reply) {
+        if (token.expired()) {
+          return true;
+        }
         auto slot = std::move(pending_start_call_slot_);
         if (!reply || reply.isError()) {
           noteDaemonSyncFailure();
@@ -415,8 +439,12 @@ bool VinputEngine::callStopRecording(const std::string& scene_id) {
   }
   auto msg = bus_->createMethodCall(kBusName, kObjectPath, kInterface, kMethodStopRecording);
   msg << scene_id;
-  pending_stop_call_slot_ =
-      msg.callAsync(vinput::runtime::kDbusCallTimeoutUsec, [this](fcitx::dbus::Message& reply) {
+  const std::weak_ptr<bool> token = lifetime_token_;
+  pending_stop_call_slot_ = msg.callAsync(
+      vinput::runtime::kDbusCallTimeoutUsec, [this, token](fcitx::dbus::Message& reply) {
+        if (token.expired()) {
+          return true;
+        }
         auto slot = std::move(pending_stop_call_slot_);
         if (!reply || reply.isError()) {
           noteDaemonSyncFailure();
@@ -459,9 +487,13 @@ void VinputEngine::ensureStatusSync() {
   }
 
   if (!status_sync_event_) {
+    const std::weak_ptr<bool> token = lifetime_token_;
     status_sync_event_ = instance_->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + kStatusSyncIntervalUsec, 0,
-        [this](fcitx::EventSourceTime* event, uint64_t) {
+        [this, token](fcitx::EventSourceTime* event, uint64_t) {
+          if (token.expired()) {
+            return false;
+          }
           syncFrontendWithDaemonStatus();
           if (!(session_.has_value() || status_ic_ != nullptr)) {
             return false;
