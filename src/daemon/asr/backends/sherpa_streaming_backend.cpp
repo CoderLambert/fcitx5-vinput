@@ -13,6 +13,7 @@
 #include "common/utils/string_utils.h"
 
 #include "daemon/asr/asr_config.h"
+#include "daemon/asr/diagnostic_pcm.h"
 #include "daemon/asr/hotword_utils.h"
 #include "daemon/asr/sherpa_json_helpers.h"
 
@@ -178,11 +179,7 @@ public:
 
 private:
   void AppendDebugPcm(std::span<const float> samples) {
-    debug_pcm_.reserve(debug_pcm_.size() + samples.size());
-    for (float sample : samples) {
-      const float clamped = std::clamp(sample, -1.0f, 1.0f);
-      debug_pcm_.push_back(static_cast<int16_t>(clamped * 32767.0f));
-    }
+    AppendDiagnosticPcm(debug_pcm_, samples);
   }
 
   void UpdateAudioStats(std::span<const float> samples) {
