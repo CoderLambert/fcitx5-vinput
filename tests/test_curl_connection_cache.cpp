@@ -139,6 +139,8 @@ void Request(CurlConnectionCache& cache, const std::string& url, std::string sec
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 3000L);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  // Keep the loopback fixture independent of CI proxy environment variables.
+  curl_easy_setopt(curl, CURLOPT_PROXY, "");
   const CURLcode code = curl_easy_perform(curl);
   curl_easy_reset(curl); // Detach per-request memory before destroying locals.
   curl_slist_free_all(headers);
