@@ -132,3 +132,7 @@ target_link_libraries(test_config_migration PRIVATE
 )
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
+
+add_executable(test_streaming_diagnostic_policy test_streaming_diagnostic_policy.cpp)
+target_include_directories(test_streaming_diagnostic_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_streaming_diagnostic_policy COMMAND test_streaming_diagnostic_policy)
