@@ -132,3 +132,10 @@ target_link_libraries(test_config_migration PRIVATE
 )
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
+
+add_executable(test_startup_pcm_buffer
+    test_startup_pcm_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/audio/audio_utils.cpp
+)
+target_include_directories(test_startup_pcm_buffer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_startup_pcm_buffer COMMAND test_startup_pcm_buffer)
