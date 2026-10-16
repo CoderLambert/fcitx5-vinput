@@ -19,6 +19,7 @@
 #include "common/utils/debug_log.h"
 
 #include "daemon/audio/audio_utils.h"
+#include "daemon/asr/runtime/async_recognition_session.h"
 #include "daemon/remote/remote_text_service.h"
 
 namespace vinput::daemon::runtime {
@@ -401,6 +402,13 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
     return DbusService::MethodResult::Failure(message);
   }
 
+  if (active_backend.capabilities.audio_delivery_mode ==
+      vinput::daemon::asr::AudioDeliveryMode::Chunked) {
+    // Keep the capture callback independent from model Decode/Provider I/O.
+    // The proxy owns queued PCM, serializes backend calls and bounds backlog.
+    session = std::make_unique<vinput::daemon::asr::AsyncRecognitionSession>(std::move(session));
+  }
+
   bool abort_started_capture = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -535,8 +543,14 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
         }
       }
       if (session_to_cancel) {
-        std::lock_guard<std::mutex> session_lock(session_io_mutex_);
-        session_to_cancel->Cancel();
+        {
+          std::lock_guard<std::mutex> session_lock(session_io_mutex_);
+          session_to_cancel->Cancel();
+        }
+        // Keep the proxy alive until the daemon main thread can safely join
+        // its ASR worker. Never join model decoding in a PipeWire callback.
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        deferred_cancelled_sessions_.push_back(std::move(session_to_cancel));
       }
       if (!session_was_active) {
         return;
@@ -750,6 +764,13 @@ void DaemonRuntimeController::FlushDeferredActions() {
     }
   }
 
+  std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>> deferred_sessions;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    deferred_sessions.swap(deferred_cancelled_sessions_);
+  }
+  deferred_sessions.clear(); // Joins workers outside the capture callback.
+
   if (!pending_capture_stop_.exchange(false, std::memory_order_acq_rel)) {
     return;
   }
@@ -817,6 +838,12 @@ void DaemonRuntimeController::Shutdown() {
   if (worker_.joinable()) {
     worker_.join();
   }
+  std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>> deferred_sessions;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    deferred_sessions.swap(deferred_cancelled_sessions_);
+  }
+  deferred_sessions.clear();
 }
 
 void DaemonRuntimeController::EnterPostprocessing(bool command_mode) {

@@ -44,6 +44,7 @@ add_executable(daemon
     main.cpp
     asr/runtime/backend_factory.cpp
     asr/runtime/recognition_session_manager.cpp
+    asr/runtime/async_recognition_session.cpp
     ${VINPUT_LOCAL_ASR_SOURCES}
     asr/backends/command_batch_backend.cpp
     asr/backends/command_streaming_backend.cpp
