@@ -24,6 +24,7 @@
 #include "common/utils/url_utils.h"
 
 #include "daemon/postprocess/prompt_template.h"
+#include "daemon/postprocess/curl_connection_cache.h"
 
 namespace {
 
@@ -31,6 +32,26 @@ using json = nlohmann::json;
 constexpr std::size_t kMaxLoggedResponseBytes = 2048;
 constexpr std::size_t kMaxResponseBytes = 1ULL * 1024ULL * 1024ULL; // 1 MB limit
 constexpr long kDefaultConnectTimeoutMs = 5000;
+
+std::string CurlProxyPolicySignature() {
+  // The request has no per-provider proxy/TLS overrides today. Include the
+  // environment policy used by libcurl so changes invalidate old connections.
+  static constexpr std::array<const char*, 11> kVariables = {
+      "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY",
+      "no_proxy", "NO_PROXY", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR"};
+  std::string signature;
+  for (const char* name : kVariables) {
+    const char* value = std::getenv(name);
+    if (value) {
+      signature.append(name);
+      signature.push_back('=');
+      signature.append(value);
+      signature.push_back('\0');
+    }
+  }
+  return signature;
+}
+
 
 struct CurlGuard {
   CURL* curl = nullptr;
@@ -47,7 +68,9 @@ struct CurlGuard {
       curl_slist_free_all(headers);
     }
     if (curl) {
-      curl_easy_cleanup(curl);
+      // Clear every per-request callback, header pointer and body pointer
+      // before response/headers/context locals are destroyed.
+      curl_easy_reset(curl);
     }
   }
 };
@@ -291,7 +314,7 @@ void MergeExtraBody(json& request, const nlohmann::json& extra, const LlmProvide
 }
 
 std::optional<std::vector<std::string>>
-RewriteWithOpenAiCompatible(const std::string& text, const vinput::scene::Definition& scene,
+RewriteWithOpenAiCompatible(CurlConnectionCache* curl_cache, const std::string& text, const vinput::scene::Definition& scene,
                             const LlmProvider& provider, int max_llm_candidates,
                             std::string* error_out, const std::string& task_prompt = {},
                             const std::atomic<bool>* shutdown_flag = nullptr,
@@ -303,13 +326,6 @@ RewriteWithOpenAiCompatible(const std::string& text, const vinput::scene::Defini
     if (error_out != nullptr) {
       error_out->clear();
     }
-    return std::nullopt;
-  }
-
-  CurlGuard guard;
-  guard.curl = curl_easy_init();
-  if (!guard.curl) {
-    fprintf(stderr, "vinput-daemon: failed to initialize libcurl\n");
     return std::nullopt;
   }
 
@@ -388,7 +404,6 @@ RewriteWithOpenAiCompatible(const std::string& text, const vinput::scene::Defini
   MergeExtraBody(request, provider.extra_body, provider);
   const std::string request_body = request.dump();
 
-  guard.headers = curl_slist_append(nullptr, vinput::llm::kJsonContentTypeHeader);
   const std::string resolved_api_key = vinput::interpolate::InterpolateEnv(provider.api_key);
   if (vinput::interpolate::HasInterpolation(provider.api_key) && resolved_api_key.empty()) {
     fprintf(stderr,
@@ -396,6 +411,24 @@ RewriteWithOpenAiCompatible(const std::string& text, const vinput::scene::Defini
             "empty\n",
             provider.api_key.c_str(), provider.id.c_str());
   }
+  // The cache holds one easy handle per PostProcessor. Reuse is only allowed
+  // for the same endpoint, resolved credentials and environment policy.
+  if (!curl_cache) {
+    if (error_out) {
+      *error_out = "libcurl was not initialized.";
+    }
+    return std::nullopt;
+  }
+  auto lease = curl_cache->Acquire({url, resolved_api_key, CurlProxyPolicySignature()});
+  CurlGuard guard;
+  guard.curl = lease.handle;
+  if (!guard.curl) {
+    if (error_out) {
+      *error_out = "Failed to initialize libcurl easy handle.";
+    }
+    return std::nullopt;
+  }
+  guard.headers = curl_slist_append(nullptr, vinput::llm::kJsonContentTypeHeader);
   if (!resolved_api_key.empty()) {
     const std::string auth = std::string(vinput::llm::kAuthorizationHeader) + ": " +
                              vinput::llm::kBearerPrefix + resolved_api_key;
@@ -517,10 +550,14 @@ PostProcessor::PostProcessor() {
   const CURLcode code = curl_global_init(CURL_GLOBAL_DEFAULT);
   if (code != CURLE_OK) {
     fprintf(stderr, "vinput-daemon: curl_global_init failed: %s\n", curl_easy_strerror(code));
+  } else {
+    curl_cache_ = std::make_unique<CurlConnectionCache>();
   }
 }
 
 PostProcessor::~PostProcessor() {
+  // Destroy cached easy handle before shutting down libcurl globally.
+  curl_cache_.reset();
   curl_global_cleanup();
 }
 
@@ -548,7 +585,7 @@ vinput::result::Payload PostProcessor::Process(const std::string& raw_text,
     return fallback;
   }
 
-  auto rewritten = RewriteWithOpenAiCompatible(normalized, scene, *provider, max_llm_candidates,
+  auto rewritten = RewriteWithOpenAiCompatible(curl_cache_.get(), normalized, scene, *provider, max_llm_candidates,
                                                error_out, {}, &shutting_down_, cancel_flag);
   if (!rewritten.has_value()) {
     return fallback;
@@ -652,7 +689,7 @@ PostProcessor::ProcessCommand(const std::string& asr_text, const std::string& se
   // Data is already embedded in task_prompt (legacy XML tags) or will be
   // substituted via {{asr}}/{{selected}} (interpolation). Pass empty text to
   // avoid double-appending.
-  auto rewritten = RewriteWithOpenAiCompatible("", command_scene, *provider,
+  auto rewritten = RewriteWithOpenAiCompatible(curl_cache_.get(), "", command_scene, *provider,
                                                command_max_llm_candidates, error_out, task_prompt,
                                                &shutting_down_, cancel_flag, asr_var, selected_var);
 
