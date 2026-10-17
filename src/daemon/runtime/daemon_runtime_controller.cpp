@@ -570,14 +570,10 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
 
   while (streaming_mode && !chunk_to_push.empty()) {
     std::string push_error;
-    std::vector<vinput::daemon::asr::RecognitionEvent> events;
+    bool pushed = false;
     {
       std::lock_guard<std::mutex> session_lock(session_io_mutex_);
-      if (!session->PushAudio(chunk_to_push, &push_error)) {
-        events.clear();
-      } else {
-        events = session->PollEvents();
-      }
+      pushed = session->PushAudio(chunk_to_push, &push_error);
     }
 
     if (!push_error.empty()) {
@@ -590,6 +586,15 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (active_session_ != session) {
         return;
+      }
+      // Drain and apply atomically under state_mutex_ (PollActiveSessionEvents
+      // does the same on the main thread): draining here and applying later
+      // could let a newer batch from the main thread be applied first and
+      // then be overwritten by this older batch.
+      std::vector<vinput::daemon::asr::RecognitionEvent> events;
+      if (pushed) {
+        const std::scoped_lock session_lock(session_io_mutex_);
+        events = session->PollEvents();
       }
 
       current_sample_count_ += chunk_to_push.size();
