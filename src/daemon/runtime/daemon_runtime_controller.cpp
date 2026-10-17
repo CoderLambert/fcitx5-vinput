@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <stdexcept>
@@ -573,11 +574,13 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
         }
       }
       if (session_to_cancel) {
-        std::lock_guard<std::mutex> session_lock(session_io_mutex_);
-        session_to_cancel->Cancel();
+        {
+          std::lock_guard<std::mutex> session_lock(session_io_mutex_);
+          session_to_cancel->Cancel();
+        }
         // Destroying the async session joins its worker; do that on the main
         // thread (FlushDeferredActions), not on this capture callback.
-        std::lock_guard<std::mutex> lock(state_mutex_);
+        const std::scoped_lock lock(state_mutex_);
         deferred_cancelled_sessions_.push_back(std::move(session_to_cancel));
       }
       if (!session_was_active) {
@@ -879,7 +882,7 @@ void DaemonRuntimeController::Shutdown() {
   }
   std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>> deferred;
   {
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    const std::scoped_lock lock(state_mutex_);
     deferred.swap(deferred_cancelled_sessions_);
   }
   deferred.clear();
