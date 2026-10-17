@@ -136,7 +136,7 @@ void TestFinishFlushesInOrderExactlyOnce() {
   Expect(state->finish_calls == 1, "second Finish must not re-finish backend");
 }
 
-void TestQueueBoundDropsIncomingChunk() {
+void TestQueueOverflowFailsSession() {
   auto state = MakeState(false);
   AsyncRecognitionSession session(std::make_unique<FakeSession>(state), 4);
   std::string error;
@@ -144,14 +144,44 @@ void TestQueueBoundDropsIncomingChunk() {
   WaitEntered(state); // Worker is inside the backend with chunk 1.
   Expect(session.PushAudio(std::vector<int16_t>{3, 4}, &error), "push queues chunk");
   Expect(session.PushAudio(std::vector<int16_t>{5, 6}, &error), "push fills queue to bound");
-  Expect(session.PushAudio(std::vector<int16_t>{7, 8}, &error), "overflow push still returns");
-  Expect(session.DroppedChunks() == 1, "overflowing chunk is dropped, not blocked");
+  error.clear();
+  Expect(!session.PushAudio(std::vector<int16_t>{7, 8}, &error), "overflow push fails");
+  Expect(!error.empty(), "overflow push reports a non-empty error");
+  Expect(session.DroppedChunks() == 1, "overflowing chunk is counted, not blocked");
   Expect(session.DroppedSamples() == 2, "dropped samples counted");
   OpenGate(state);
-  Expect(session.Finish(&error), "finish after drops");
+  error.clear();
+  Expect(!session.Finish(&error), "Finish after overflow reports failure");
+  Expect(!error.empty(), "Finish after overflow reports a non-empty error");
   const std::scoped_lock lock(state->mutex);
-  Expect(state->received == std::vector<int16_t>({1, 2, 3, 4, 5, 6}),
-         "dropped chunk never delivered");
+  Expect(state->received == std::vector<int16_t>({1, 2}),
+         "queued and dropped chunks are never delivered after overflow");
+  Expect(state->finish_calls == 0, "backend Finish not called after overflow");
+  Expect(state->cancel_calls == 1, "backend Cancel called exactly once after overflow");
+}
+
+void TestQueueOverflowOversizedChunk() {
+  auto state = MakeState(true);
+  AsyncRecognitionSession session(std::make_unique<FakeSession>(state), 4);
+  std::string error;
+  Expect(!session.PushAudio(std::vector<int16_t>{1, 2, 3, 4, 5}, &error),
+         "chunk larger than total capacity fails");
+  Expect(!error.empty(), "oversized chunk reports a non-empty error");
+  Expect(session.DroppedChunks() == 1, "oversized chunk is counted as dropped");
+  Expect(session.DroppedSamples() == 5, "oversized chunk samples counted");
+  Expect(!session.Finish(&error), "Finish after oversized chunk reports failure");
+  Expect(!error.empty(), "Finish after oversized chunk reports a non-empty error");
+}
+
+void TestQueueZeroCapacityFails() {
+  auto state = MakeState(true);
+  AsyncRecognitionSession session(std::make_unique<FakeSession>(state), 0);
+  std::string error;
+  Expect(!session.PushAudio(std::vector<int16_t>{1}, &error), "zero-capacity push fails");
+  Expect(!error.empty(), "zero-capacity push reports a non-empty error");
+  Expect(session.DroppedChunks() == 1, "zero-capacity chunk is counted as dropped");
+  Expect(session.DroppedSamples() == 1, "zero-capacity samples counted");
+  Expect(!session.Finish(&error), "Finish with zero capacity reports failure");
 }
 
 void TestCancelClearsQueueAndCompletesOnce() {
@@ -191,7 +221,9 @@ void TestDestructorCancelsAndJoinsPromptly() {
 
 int main() {
   TestFinishFlushesInOrderExactlyOnce();
-  TestQueueBoundDropsIncomingChunk();
+  TestQueueOverflowFailsSession();
+  TestQueueOverflowOversizedChunk();
+  TestQueueZeroCapacityFails();
   TestCancelClearsQueueAndCompletesOnce();
   TestDestructorCancelsAndJoinsPromptly();
   std::cout << "Async recognition session tests passed\n";

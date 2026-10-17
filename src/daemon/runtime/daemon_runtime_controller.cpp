@@ -16,6 +16,7 @@
 #include "common/asr/recognition_result.h"
 #include "common/config/core_config.h"
 #include "common/dbus/dbus_interface.h"
+#include "common/dbus/error_info.h"
 #include "common/i18n.h"
 #include "common/utils/debug_log.h"
 #include "common/utils/time_utils.h"
@@ -30,6 +31,8 @@ namespace vinput::daemon::runtime {
 namespace {
 
 constexpr std::size_t kStreamingChunkSamples = 800;
+constexpr const char* kFailedToPushAudioError = "Failed to push audio chunk.";
+constexpr const char* kFailedToFinishSessionError = "Failed to finish recognition session.";
 constexpr float kNonSilentPeakThreshold = 0.02f;
 constexpr float kNonSilentRmsThreshold = 0.005f;
 
@@ -136,9 +139,9 @@ vinput::daemon::asr::RecognitionRunResult FinishSessionAndCollectResult(
   std::vector<vinput::daemon::asr::RecognitionEvent> events;
   {
     std::lock_guard<std::mutex> session_lock(*session_io_mutex);
-    if (!session->Finish(&session_error) && !session_error.empty()) {
+    if (!session->Finish(&session_error)) {
       result.ok = false;
-      result.error = session_error;
+      result.error = session_error.empty() ? kFailedToFinishSessionError : session_error;
     }
     events = session->PollEvents();
   }
@@ -152,7 +155,9 @@ vinput::daemon::asr::RecognitionRunResult FinishSessionAndCollectResult(
       break;
     case vinput::daemon::asr::RecognitionEventKind::Error:
       result.ok = false;
-      result.error = std::move(event.error);
+      if (!event.error.empty()) {
+        result.error = std::move(event.error);
+      }
       break;
     case vinput::daemon::asr::RecognitionEventKind::Completed:
       break;
@@ -542,16 +547,21 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
   while (streaming_mode && !chunk_to_push.empty()) {
     std::string push_error;
     std::vector<vinput::daemon::asr::RecognitionEvent> events;
+    bool pushed = false;
     {
       std::lock_guard<std::mutex> session_lock(session_io_mutex_);
-      if (!session->PushAudio(chunk_to_push, &push_error)) {
+      pushed = session->PushAudio(chunk_to_push, &push_error);
+      if (!pushed) {
         events.clear();
       } else {
         events = session->PollEvents();
       }
     }
+    if (!pushed && push_error.empty()) {
+      push_error = kFailedToPushAudioError;
+    }
 
-    if (!push_error.empty()) {
+    if (!pushed || !push_error.empty()) {
       std::shared_ptr<vinput::daemon::asr::RecognitionSession> session_to_cancel;
       bool session_was_active = false;
       {
@@ -935,6 +945,7 @@ void DaemonRuntimeController::WorkerMain() {
     }
 
     try {
+      bool recognition_failed = false;
       auto runtime_settings = LoadCoreConfig();
       NormalizeCoreConfig(&runtime_settings);
 
@@ -954,8 +965,7 @@ void DaemonRuntimeController::WorkerMain() {
           std::string push_error;
           std::lock_guard<std::mutex> session_lock(session_io_mutex_);
           if (!order.session->PushAudio(order.pcm, &push_error)) {
-            throw std::runtime_error(push_error.empty() ? "Failed to push buffered audio."
-                                                        : push_error);
+            throw std::runtime_error(push_error.empty() ? kFailedToPushAudioError : push_error);
           }
           order.pcm.clear();
         }
@@ -963,17 +973,27 @@ void DaemonRuntimeController::WorkerMain() {
         std::string recognition_error;
         auto result =
             FinishSessionAndCollectResult(order.session, &session_io_mutex_, &recognition_error);
-        if (!result.error.empty()) {
-          fprintf(stderr, "vinput-daemon: recognition error: %s\n", result.error.c_str());
-          dbus_->EmitNotification(vinput::dbus::ClassifyErrorText(result.error));
-        }
-        if (!result.text.empty()) {
+        if (!result.ok || !result.error.empty()) {
+          // Preserve the structured error classification (as the previous
+          // error path did) instead of routing this through the generic
+          // exception handler, which would downgrade it to a raw error.
+          const std::string failure =
+              result.error.empty() ? kFailedToFinishSessionError : result.error;
+          fprintf(stderr, "vinput-daemon: recognition error: %s\n", failure.c_str());
+          dbus_->EmitNotification(vinput::dbus::ClassifyErrorText(failure));
+          recognition_failed = true;
+        } else if (!result.text.empty()) {
           order.recognized_text = std::move(result.text);
           // RecognitionPartial is also the protocol's transcript-update signal.
           dbus_->EmitRecognitionPartial(order.recognized_text);
         }
         order.pcm.clear();
         order.session.reset();
+      }
+
+      if (recognition_failed) {
+        ResetToIdle();
+        continue;
       }
 
       postprocessing_cancel_requested_.store(false, std::memory_order_relaxed);
