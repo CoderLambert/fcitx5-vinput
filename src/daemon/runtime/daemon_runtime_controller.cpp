@@ -490,7 +490,7 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
   // collect every callback in order under the same state mutex used to
   // atomically install the live session.
   {
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    const std::scoped_lock lock(state_mutex_);
     if (start_recording_in_progress_ && !active_session_) {
       startup_pcm_buffer_.Append(pcm);
       return;
