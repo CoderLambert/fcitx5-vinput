@@ -24,6 +24,7 @@
 #include "common/utils/debug_log.h"
 #include "common/utils/interpolation.h"
 #include "common/utils/path_utils.h"
+#include "common/utils/string_utils.h"
 #include "common/utils/url_utils.h"
 
 #include "daemon/postprocess/curl_connection_cache.h"
@@ -134,16 +135,6 @@ int ProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t, curl_off
   return ctx != nullptr && CancellationRequested(*ctx) ? 1 : 0;
 }
 
-std::string_view TrimAsciiWhitespace(std::string_view text) {
-  const auto begin = text.find_first_not_of(" \t\r\n");
-  if (begin == std::string_view::npos) {
-    return {};
-  }
-
-  const auto end = text.find_last_not_of(" \t\r\n");
-  return text.substr(begin, end - begin + 1);
-}
-
 json BuildCandidatesResponseFormat() {
   return {
       {"type", "json_object"},
@@ -242,7 +233,7 @@ std::vector<std::string> ExtractCandidates(const json& response) {
       continue;
     }
     const auto candidate_text = value.get<std::string>();
-    const auto trimmed_candidate = TrimAsciiWhitespace(candidate_text);
+    const auto trimmed_candidate = vinput::str::TrimAsciiWhitespaceView(candidate_text);
     if (!trimmed_candidate.empty()) {
       candidates.emplace_back(trimmed_candidate);
     }
@@ -571,7 +562,7 @@ RewriteWithOpenAiCompatible(CurlConnectionCache* curl_cache, const std::string& 
 }
 
 void AppendCandidate(vinput::result::Payload& payload, std::string text, const char* source) {
-  text = TrimAsciiWhitespace(std::move(text));
+  text = vinput::str::TrimAsciiWhitespace(text);
   if (text.empty()) {
     return;
   }
@@ -605,7 +596,7 @@ vinput::result::Payload PostProcessor::Process(const std::string& raw_text,
                                                const vinput::scene::Definition& scene,
                                                const CoreConfig& settings, std::string* error_out,
                                                const std::atomic<bool>* cancel_flag) const {
-  std::string normalized = std::string(TrimAsciiWhitespace(raw_text));
+  const std::string normalized = vinput::str::TrimAsciiWhitespace(raw_text);
   if (normalized.empty()) {
     return {};
   }
@@ -639,7 +630,7 @@ vinput::result::Payload PostProcessor::Process(const std::string& raw_text,
   std::string first_llm_text;
   int accepted_llm_candidates = 0;
   for (auto& text : *rewritten) {
-    std::string trimmed = std::string(TrimAsciiWhitespace(text));
+    std::string trimmed = vinput::str::TrimAsciiWhitespace(text);
     if (trimmed.empty()) {
       continue;
     }
@@ -668,7 +659,7 @@ PostProcessor::ProcessCommand(const std::string& asr_text, const std::string& se
                               const vinput::scene::Definition& command_scene,
                               const CoreConfig& settings, std::string* error_out,
                               const std::atomic<bool>* cancel_flag) const {
-  std::string normalized_asr = std::string(TrimAsciiWhitespace(asr_text));
+  const std::string normalized_asr = vinput::str::TrimAsciiWhitespace(asr_text);
 
   vinput::result::Payload fallback;
   const std::string& fallback_text = normalized_asr.empty() ? selected_text : normalized_asr;
@@ -747,7 +738,7 @@ PostProcessor::ProcessCommand(const std::string& asr_text, const std::string& se
   int accepted_llm_candidates = 0;
   if (rewritten.has_value()) {
     for (auto& text : *rewritten) {
-      std::string trimmed = std::string(TrimAsciiWhitespace(text));
+      std::string trimmed = vinput::str::TrimAsciiWhitespace(text);
       if (trimmed.empty()) {
         continue;
       }

@@ -47,48 +47,24 @@ std::vector<std::string> BuildJournalctlCommand(bool follow, int lines) {
 
 int RunCommand(const std::vector<std::string>& args);
 
-std::string Trim(std::string_view text) {
-  size_t begin = 0;
-  while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin]))) {
-    begin++;
-  }
-  size_t end = text.size();
-  while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
-    end--;
-  }
-  return std::string(text.substr(begin, end - begin));
-}
-
-std::vector<std::string> SplitLines(std::string_view text) {
-  std::vector<std::string> lines;
-  size_t start = 0;
-  while (start < text.size()) {
-    size_t end = text.find('\n', start);
-    if (end == std::string_view::npos) {
-      end = text.size();
-    }
-    lines.push_back(std::string(text.substr(start, end - start)));
-    start = end + 1;
-  }
-  return lines;
-}
-
-std::string StripJournalPrefix(std::string line) {
+std::string StripJournalPrefix(std::string_view line) {
   auto pos = line.find("]: ");
-  if (pos != std::string::npos) {
-    line.erase(0, pos + 3);
+  if (pos != std::string_view::npos) {
+    line.remove_prefix(pos + 3);
   } else {
     pos = line.find(": ");
-    if (pos != std::string::npos) {
-      line.erase(0, pos + 2);
+    if (pos != std::string_view::npos) {
+      line.remove_prefix(pos + 2);
     }
   }
-  if (line.starts_with("vinput-daemon: ")) {
-    line.erase(0, std::string("vinput-daemon: ").size());
-  } else if (line.starts_with("vinput: ")) {
-    line.erase(0, std::string("vinput: ").size());
+  constexpr std::string_view kDaemonPrefix = "vinput-daemon: ";
+  constexpr std::string_view kCliPrefix = "vinput: ";
+  if (line.starts_with(kDaemonPrefix)) {
+    line.remove_prefix(kDaemonPrefix.size());
+  } else if (line.starts_with(kCliPrefix)) {
+    line.remove_prefix(kCliPrefix.size());
   }
-  return Trim(line);
+  return vinput::str::TrimAsciiWhitespace(line);
 }
 
 bool IsActionableFailureLine(const std::string& line) {
@@ -112,7 +88,7 @@ std::vector<std::string> ExtractDaemonFailureReasons(const std::string& logs) {
   std::vector<std::string> candidates;
   std::unordered_set<std::string> seen;
 
-  auto lines = SplitLines(logs);
+  auto lines = vinput::str::SplitLines(logs);
   for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
     std::string line = StripJournalPrefix(*it);
     if (line.empty()) {

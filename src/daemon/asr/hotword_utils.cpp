@@ -10,6 +10,7 @@
 
 #include "common/asr/bpe_vocab_exporter.h"
 #include "common/asr/model_manager.h"
+#include "common/utils/string_utils.h"
 
 #include "daemon/asr/sherpa_json_helpers.h"
 
@@ -21,15 +22,6 @@ constexpr std::uintmax_t kMaxHotwordFileBytes = 1024ULL * 1024ULL;
 
 bool IsAsciiWhitespace(char c) {
   return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-}
-
-std::string_view TrimAsciiWhitespace(std::string_view value) {
-  const auto first = value.find_first_not_of(" \t\r\n");
-  if (first == std::string_view::npos) {
-    return {};
-  }
-  const auto last = value.find_last_not_of(" \t\r\n");
-  return value.substr(first, last - first + 1);
 }
 
 bool ValidateHotwordUtf8(std::string_view text, std::string* error) {
@@ -197,7 +189,7 @@ bool LooksLikeScore(std::string_view value) {
 }
 
 bool ParseHotwordEntry(std::string line, HotwordEntry* entry, std::string* error) {
-  line = TrimAsciiWhitespace(std::move(line));
+  line = vinput::str::TrimAsciiWhitespace(line);
   if (line.empty()) {
     entry->text.clear();
     entry->score.clear();
@@ -221,8 +213,8 @@ bool ParseHotwordEntry(std::string line, HotwordEntry* entry, std::string* error
   }
 
   const std::string raw_score = line.substr(colon + 1);
-  const std::string score = std::string(TrimAsciiWhitespace(raw_score));
-  const std::string text = std::string(TrimAsciiWhitespace(line.substr(0, colon)));
+  const std::string score = vinput::str::TrimAsciiWhitespace(raw_score);
+  const std::string text = vinput::str::TrimAsciiWhitespace(line.substr(0, colon));
   if (IsValidScore(score)) {
     const bool whitespace_before = colon > 0 && IsAsciiWhitespace(line[colon - 1]);
     const bool whitespace_after = raw_score != score;
