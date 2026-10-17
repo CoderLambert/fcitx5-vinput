@@ -45,7 +45,7 @@ if(Fcitx5Core_VERSION VERSION_GREATER_EQUAL "5.1.9")
 endif()
 
 target_link_libraries(modifier_key_tests PRIVATE
-    common
+    config
     Fcitx5::Core
     Fcitx5::Module::DBus
     Fcitx5::Module::Clipboard
@@ -88,6 +88,10 @@ target_link_libraries(test_command_streaming PRIVATE
 )
 
 add_test(NAME test_command_streaming COMMAND test_command_streaming)
+
+add_executable(test_command_streaming_time test_command_streaming_time.cpp)
+target_include_directories(test_command_streaming_time PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_command_streaming_time COMMAND test_command_streaming_time)
 
 add_executable(test_installed_manifest
     test_installed_manifest.cpp
@@ -134,6 +138,28 @@ target_link_libraries(test_config_migration PRIVATE
 )
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
+
+add_executable(test_diagnostic_pcm test_diagnostic_pcm.cpp)
+target_include_directories(test_diagnostic_pcm PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_diagnostic_pcm COMMAND test_diagnostic_pcm)
+
+add_executable(test_startup_pcm_buffer
+    test_startup_pcm_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/audio/audio_utils.cpp
+)
+target_include_directories(test_startup_pcm_buffer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_startup_pcm_buffer COMMAND test_startup_pcm_buffer)
+
+add_executable(test_audio_input_gain
+    test_audio_input_gain.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/audio/audio_utils.cpp
+)
+target_include_directories(test_audio_input_gain PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_audio_input_gain COMMAND test_audio_input_gain)
+
+add_executable(test_status_poll_gate test_status_poll_gate.cpp)
+target_include_directories(test_status_poll_gate PRIVATE ${CMAKE_SOURCE_DIR}/src/addon)
+add_test(NAME test_status_poll_gate COMMAND test_status_poll_gate)
 
 add_executable(test_async_context_writer
     test_async_context_writer.cpp

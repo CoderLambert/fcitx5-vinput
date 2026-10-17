@@ -1,7 +1,10 @@
 #include "core/context_writer.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -12,7 +15,7 @@ AsyncContextWriter::AsyncContextWriter(std::filesystem::path path)
 
 AsyncContextWriter::~AsyncContextWriter() {
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
     stopping_ = true;
   }
   wake_cv_.notify_one();
@@ -27,19 +30,18 @@ bool AsyncContextWriter::Enqueue(std::string json_line, int max_lines) {
     return true;
   }
   if (json_line.size() > kMaxPendingBytes) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
     ++dropped_;
     return false;
   }
   bool lost_entries = false;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) {
       return false;
     }
-    while (!pending_.empty() &&
-           (pending_.size() >= kMaxPendingEntries ||
-            pending_bytes_ > kMaxPendingBytes - json_line.size())) {
+    while (!pending_.empty() && (pending_.size() >= kMaxPendingEntries ||
+                                 pending_bytes_ > kMaxPendingBytes - json_line.size())) {
       pending_bytes_ -= pending_.front().json_line.size();
       pending_.pop_front();
       ++dropped_;
@@ -58,7 +60,7 @@ bool AsyncContextWriter::WaitUntilIdle(std::chrono::milliseconds timeout) {
 }
 
 std::size_t AsyncContextWriter::DroppedEntries() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  const std::lock_guard<std::mutex> lock(mutex_);
   return dropped_;
 }
 
@@ -80,7 +82,7 @@ void AsyncContextWriter::Run() {
     Persist(job);
 
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      const std::lock_guard<std::mutex> lock(mutex_);
       writing_ = false;
       if (pending_.empty()) {
         idle_cv_.notify_all();
@@ -143,8 +145,7 @@ void AsyncContextWriter::Persist(const Job& job) {
   }
   std::filesystem::rename(temp_path, path_, ec);
   if (ec) {
-    std::fprintf(stderr, "vinput: failed to rotate context cache: %s\n",
-                 ec.message().c_str());
+    std::fprintf(stderr, "vinput: failed to rotate context cache: %s\n", ec.message().c_str());
   }
 }
 

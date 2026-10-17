@@ -1,6 +1,7 @@
 #include "common/utils/path_utils.h"
 
 #include <cstdlib>
+#include <string>
 #include <sys/stat.h>
 
 namespace vinput::path {
@@ -178,6 +179,10 @@ std::filesystem::path ProviderModelCachePath() {
 
 std::filesystem::path InstalledManifestCachePath() {
   return VinputCacheDir() / "installed.json";
+}
+
+std::filesystem::path I18nCachePath(std::string_view locale) {
+  return RegistryCacheDir() / "i18n" / (std::string(locale) + ".json");
 }
 
 } // namespace vinput::path

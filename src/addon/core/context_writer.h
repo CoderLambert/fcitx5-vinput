@@ -20,6 +20,8 @@ public:
   ~AsyncContextWriter();
   AsyncContextWriter(const AsyncContextWriter&) = delete;
   AsyncContextWriter& operator=(const AsyncContextWriter&) = delete;
+  AsyncContextWriter(AsyncContextWriter&&) = delete;
+  AsyncContextWriter& operator=(AsyncContextWriter&&) = delete;
 
   // Returns false only if the entry could not be queued. Slow disks never
   // synchronously delay the caller. JSON is already serialized by the caller.
