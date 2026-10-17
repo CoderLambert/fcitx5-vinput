@@ -75,16 +75,16 @@ struct HttpFixture {
   explicit HttpFixture(ServerMode server_mode)
       : mode(server_mode), listener(socket(AF_INET, SOCK_STREAM, 0)) {
     Require(listener >= 0, "socket");
-    union {
-      sockaddr sa;
-      sockaddr_in in;
-    } addr{};
-    addr.in.sin_family = AF_INET;
-    addr.in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    Require(bind(listener, &addr.sa, sizeof(addr.in)) == 0, "bind");
-    socklen_t len = sizeof(addr.in);
-    Require(getsockname(listener, &addr.sa, &len) == 0, "getsockname");
-    port = ntohs(addr.in.sin_port);
+    sockaddr_in sin{};
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sockaddr sa{};
+    std::memcpy(&sa, &sin, sizeof(sin));
+    Require(bind(listener, &sa, sizeof(sin)) == 0, "bind");
+    socklen_t len = sizeof(sa);
+    Require(getsockname(listener, &sa, &len) == 0, "getsockname");
+    std::memcpy(&sin, &sa, sizeof(sin));
+    port = ntohs(sin.sin_port);
     Require(listen(listener, 8) == 0, "listen");
     worker = std::thread([this] { Run(); });
   }
