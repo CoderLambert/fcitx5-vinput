@@ -30,6 +30,7 @@ namespace {
 
 constexpr std::size_t kStreamingChunkSamples = 800;
 constexpr const char* kFailedToPushAudioError = "Failed to push audio chunk.";
+constexpr const char* kFailedToFinishSessionError = "Failed to finish recognition session.";
 constexpr float kNonSilentPeakThreshold = 0.02f;
 constexpr float kNonSilentRmsThreshold = 0.005f;
 
@@ -143,9 +144,9 @@ vinput::daemon::asr::RecognitionRunResult FinishSessionAndCollectResult(
   std::vector<vinput::daemon::asr::RecognitionEvent> events;
   {
     std::lock_guard<std::mutex> session_lock(*session_io_mutex);
-    if (!session->Finish(&session_error) && !session_error.empty()) {
+    if (!session->Finish(&session_error)) {
       result.ok = false;
-      result.error = session_error;
+      result.error = session_error.empty() ? kFailedToFinishSessionError : session_error;
     }
     events = session->PollEvents();
   }
@@ -978,9 +979,9 @@ void DaemonRuntimeController::WorkerMain() {
         std::string recognition_error;
         auto result =
             FinishSessionAndCollectResult(order.session, &session_io_mutex_, &recognition_error);
-        if (!result.error.empty()) {
-          fprintf(stderr, "vinput-daemon: recognition error: %s\n", result.error.c_str());
-          dbus_->EmitNotification(vinput::dbus::ClassifyErrorText(result.error));
+        if (!result.ok || !result.error.empty()) {
+          throw std::runtime_error(result.error.empty() ? kFailedToFinishSessionError
+                                                        : result.error);
         }
         if (!result.text.empty()) {
           order.recognized_text = std::move(result.text);
