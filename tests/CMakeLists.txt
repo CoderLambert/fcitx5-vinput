@@ -154,3 +154,7 @@ add_executable(test_audio_input_gain
 )
 target_include_directories(test_audio_input_gain PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_audio_input_gain COMMAND test_audio_input_gain)
+
+add_executable(test_status_poll_gate test_status_poll_gate.cpp)
+target_include_directories(test_status_poll_gate PRIVATE ${CMAKE_SOURCE_DIR}/src/addon)
+add_test(NAME test_status_poll_gate COMMAND test_status_poll_gate)

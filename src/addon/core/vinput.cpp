@@ -204,6 +204,8 @@ VinputEngine::~VinputEngine() {
   flushContextBuffer();
   context_flush_timer_.reset();
   status_sync_event_.reset();
+  status_poll_gate_.Cancel();
+  pending_status_call_slot_.reset();
   pending_stop_event_.reset();
   pending_start_event_.reset();
 
