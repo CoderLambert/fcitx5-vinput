@@ -1,5 +1,4 @@
 #include "daemon/asr/backends/command_streaming_backend.h"
-#include "daemon/asr/backends/command_streaming_time_utils.h"
 
 #include <cerrno>
 #include <chrono>
@@ -24,6 +23,8 @@
 #include "common/utils/interpolation.h"
 #include "common/utils/process_utils.h"
 #include "common/utils/string_utils.h"
+
+#include "daemon/asr/backends/command_streaming_time_utils.h"
 
 extern char** environ;
 
