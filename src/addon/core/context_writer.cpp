@@ -66,20 +66,20 @@ std::size_t AsyncContextWriter::DroppedEntries() const {
 
 void AsyncContextWriter::Run() {
   while (true) {
-    Job job;
+    ContextWriteTask task;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       wake_cv_.wait(lock, [&] { return stopping_ || !pending_.empty(); });
       if (pending_.empty()) {
         return;
       }
-      job = std::move(pending_.front());
-      pending_bytes_ -= job.json_line.size();
+      task = std::move(pending_.front());
+      pending_bytes_ -= task.json_line.size();
       pending_.pop_front();
       writing_ = true;
     }
 
-    Persist(job);
+    Persist(task);
 
     {
       const std::lock_guard<std::mutex> lock(mutex_);
@@ -91,7 +91,7 @@ void AsyncContextWriter::Run() {
   }
 }
 
-void AsyncContextWriter::Persist(const Job& job) {
+void AsyncContextWriter::Persist(const ContextWriteTask& task) {
   std::error_code ec;
   std::filesystem::create_directories(path_.parent_path(), ec);
   if (ec) {
@@ -106,11 +106,11 @@ void AsyncContextWriter::Persist(const Job& job) {
       std::fprintf(stderr, "vinput: failed to open context cache for append\n");
       return;
     }
-    ofs << job.json_line << '\n';
+    ofs << task.json_line << '\n';
   }
 
   constexpr int kTruncateInterval = 100;
-  if (job.max_lines <= 0 || ++write_count_ < kTruncateInterval) {
+  if (task.max_lines <= 0 || ++write_count_ < kTruncateInterval) {
     return;
   }
   write_count_ = 0;
@@ -127,10 +127,10 @@ void AsyncContextWriter::Persist(const Job& job) {
   }
   ifs.close();
 
-  if (lines.size() <= static_cast<std::size_t>(job.max_lines)) {
+  if (lines.size() <= static_cast<std::size_t>(task.max_lines)) {
     return;
   }
-  const auto begin = lines.end() - job.max_lines;
+  const auto begin = lines.end() - task.max_lines;
   const auto temp_path = path_.string() + ".tmp";
   std::ofstream out(temp_path, std::ios::trunc);
   if (!out) {

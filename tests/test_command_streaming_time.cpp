@@ -23,8 +23,8 @@ void TestRemainingPollMs() {
   const auto pending = now + milliseconds(49);
   const auto huge = now + milliseconds(static_cast<std::int64_t>(INT_MAX) + 10000);
 
-  const auto remaining = [now](Clock::time_point deadline, int upper) {
-    return vinput::daemon::asr::RemainingPollMs(deadline, upper, now);
+  const auto remaining = [now](Clock::time_point deadline, int max_timeout) {
+    return vinput::daemon::asr::RemainingPollMs(deadline, max_timeout, now);
   };
   Expect(remaining(now - milliseconds(1), 50) == 0, "past deadline");
   Expect(remaining(now, 50) == 0, "expired deadline");

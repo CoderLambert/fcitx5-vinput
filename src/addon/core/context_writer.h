@@ -30,13 +30,13 @@ public:
   std::size_t DroppedEntries() const;
 
 private:
-  struct Job {
+  struct ContextWriteTask {
     std::string json_line;
     int max_lines = 0;
   };
 
   void Run();
-  void Persist(const Job& job);
+  void Persist(const ContextWriteTask& task);
 
   static constexpr std::size_t kMaxPendingBytes = 4U * 1024U * 1024U;
   static constexpr std::size_t kMaxPendingEntries = 1024;
@@ -45,7 +45,7 @@ private:
   mutable std::mutex mutex_;
   std::condition_variable wake_cv_;
   std::condition_variable idle_cv_;
-  std::deque<Job> pending_;
+  std::deque<ContextWriteTask> pending_;
   std::size_t pending_bytes_ = 0;
   std::size_t dropped_ = 0;
   int write_count_ = 0;
