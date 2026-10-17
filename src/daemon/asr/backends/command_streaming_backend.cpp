@@ -396,6 +396,12 @@ public:
 
 private:
   bool EnsureStarted(std::string* error) {
+    if (cancelled_) {
+      if (error != nullptr) {
+        *error = "Recognition session already cancelled.";
+      }
+      return false;
+    }
     if (started_) {
       return true;
     }

@@ -338,6 +338,8 @@ void TestCancelDoesNotStartProvider() {
   auto session = backend->CreateSession(&error);
   ExpectTrue(session != nullptr, "CreateSession failed");
   session->Cancel();
+  ExpectTrue(!session->PushAudio({}, &error), "PushAudio after Cancel must fail");
+  ExpectTrue(!session->Finish(&error), "Finish after Cancel must fail");
   const bool started = access(marker.c_str(), F_OK) == 0;
   unlink(marker.c_str());
   ExpectTrue(!started, "Cancel must not spawn a provider solely to stop it");
