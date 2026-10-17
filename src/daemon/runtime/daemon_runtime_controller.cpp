@@ -29,6 +29,7 @@ namespace vinput::daemon::runtime {
 namespace {
 
 constexpr std::size_t kStreamingChunkSamples = 800;
+constexpr const char* kFailedToPushAudioError = "Failed to push audio chunk.";
 constexpr float kNonSilentPeakThreshold = 0.02f;
 constexpr float kNonSilentRmsThreshold = 0.005f;
 
@@ -552,16 +553,21 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
   while (streaming_mode && !chunk_to_push.empty()) {
     std::string push_error;
     std::vector<vinput::daemon::asr::RecognitionEvent> events;
+    bool pushed = false;
     {
       std::lock_guard<std::mutex> session_lock(session_io_mutex_);
-      if (!session->PushAudio(chunk_to_push, &push_error)) {
+      pushed = session->PushAudio(chunk_to_push, &push_error);
+      if (!pushed) {
         events.clear();
       } else {
         events = session->PollEvents();
       }
     }
+    if (!pushed && push_error.empty()) {
+      push_error = kFailedToPushAudioError;
+    }
 
-    if (!push_error.empty()) {
+    if (!pushed || !push_error.empty()) {
       std::shared_ptr<vinput::daemon::asr::RecognitionSession> session_to_cancel;
       bool session_was_active = false;
       {
@@ -964,8 +970,7 @@ void DaemonRuntimeController::WorkerMain() {
           std::string push_error;
           std::lock_guard<std::mutex> session_lock(session_io_mutex_);
           if (!order.session->PushAudio(order.pcm, &push_error)) {
-            throw std::runtime_error(push_error.empty() ? "Failed to push buffered audio."
-                                                        : push_error);
+            throw std::runtime_error(push_error.empty() ? kFailedToPushAudioError : push_error);
           }
           order.pcm.clear();
         }
