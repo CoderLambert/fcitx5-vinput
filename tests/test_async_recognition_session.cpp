@@ -7,6 +7,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -217,6 +218,57 @@ void TestDestructorCancelsAndJoinsPromptly() {
   Expect(state->cancel_calls == 1, "destructor cancels backend exactly once");
 }
 
+// Equivalent of the controller's deferred retirement at session level:
+// after Cancel, a local reference released on another thread must not join
+// the worker while the deferred holder still owns the session. The gate
+// keeps the backend inside PushAudio; the releaser must report completion
+// (signalled via condition variable, not a fixed-ms performance gate)
+// while the gate is still closed. Only clearing the deferred holder on
+// this thread may join, and repeated Cancel must stay exactly-once.
+void TestDeferredReleaseDoesNotJoinOnReleasingThread() {
+  auto state = MakeState(false);
+  auto session =
+      std::make_shared<AsyncRecognitionSession>(std::make_unique<FakeSession>(state), 1024);
+  std::string error;
+  Expect(session->PushAudio(std::vector<int16_t>{1}, &error), "push in-flight");
+  WaitEntered(state); // Worker is blocked inside backend PushAudio.
+  Expect(session->PushAudio(std::vector<int16_t>{2}, &error), "push queued");
+  session->Cancel();
+  session->Cancel(); // Idempotent: must not cause a second backend Cancel.
+
+  std::vector<std::shared_ptr<AsyncRecognitionSession>> deferred;
+  deferred.push_back(session);
+
+  std::mutex release_mutex;
+  std::condition_variable release_cv;
+  bool released = false;
+  std::thread releaser([&] {
+    session.reset();
+    {
+      const std::scoped_lock lock(release_mutex);
+      released = true;
+    }
+    release_cv.notify_all();
+  });
+  {
+    std::unique_lock<std::mutex> lock(release_mutex);
+    const bool ok = release_cv.wait_for(lock, std::chrono::seconds(5), [&] { return released; });
+    Expect(ok, "releasing a non-last reference returns while backend is gated");
+  }
+  releaser.join();
+  {
+    const std::scoped_lock lock(state->mutex);
+    Expect(state->cancel_calls == 0, "backend Cancel not yet run while PushAudio is gated");
+  }
+
+  OpenGate(state);
+  deferred.clear(); // Main-thread retirement: destructor joins worker here.
+  const std::scoped_lock lock(state->mutex);
+  Expect(state->received == std::vector<int16_t>({1}), "queued chunk discarded by Cancel");
+  Expect(state->cancel_calls == 1, "backend Cancel exactly once after repeated Cancel");
+  Expect(state->finish_calls == 0, "backend Finish not called after Cancel");
+}
+
 } // namespace
 
 int main() {
@@ -226,5 +278,6 @@ int main() {
   TestQueueZeroCapacityFails();
   TestCancelClearsQueueAndCompletesOnce();
   TestDestructorCancelsAndJoinsPromptly();
+  TestDeferredReleaseDoesNotJoinOnReleasingThread();
   std::cout << "Async recognition session tests passed\n";
 }

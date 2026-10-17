@@ -260,8 +260,14 @@ DbusService::MethodResult DaemonRuntimeController::CancelOperation(bool commit_r
   }
 
   if (session_to_cancel) {
-    const std::scoped_lock io_lock(session_io_mutex_);
-    session_to_cancel->Cancel();
+    {
+      const std::scoped_lock io_lock(session_io_mutex_);
+      session_to_cancel->Cancel();
+    }
+    // Do not let session_to_cancel destruct here: destroying an async
+    // session joins its worker on this D-Bus thread. Retire it on the main
+    // thread instead. Cancel() is idempotent, so exactly-once is preserved.
+    RetireCancelledSession(std::move(session_to_cancel));
   }
 
   if (apply_pending_reload) {
@@ -596,28 +602,44 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
     }
 
     bool keep_processing = false;
+    bool session_retired = false;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (active_session_ != session) {
-        return;
-      }
-
-      current_sample_count_ += chunk_to_push.size();
-      pending_chunk_pcm_.erase(pending_chunk_pcm_.begin(),
-                               pending_chunk_pcm_.begin() +
-                                   static_cast<std::ptrdiff_t>(chunk_to_push.size()));
-      ApplyRecognitionEvents(events, &latest_final_text_, &first_partial_logged_,
-                             recording_started_at_, first_non_silent_at_, dbus_);
-      keep_processing = pending_chunk_pcm_.size() >= kStreamingChunkSamples;
-      if (keep_processing) {
-        chunk_to_push.assign(pending_chunk_pcm_.begin(),
-                             pending_chunk_pcm_.begin() +
-                                 static_cast<std::ptrdiff_t>(kStreamingChunkSamples));
-        recording_started_at = recording_started_at_;
-        first_non_silent_at = first_non_silent_at_;
+        // This local reference may be the session's last owner; releasing
+        // it here would destroy the async session (Cancel + worker join)
+        // on the capture callback. Transfer it to the deferred main-thread
+        // retirement vector while still under state_mutex_, then wake the
+        // main thread only after the transfer (see RetireCancelledSession).
+        // No Cancel is issued here: whoever replaced active_session_
+        // already owns cancellation of the old session, and the deferred
+        // vector only holds an extra reference if another owner (e.g.
+        // current_order_) still has one, so a newer session is unaffected.
+        deferred_cancelled_sessions_.push_back(session);
+        session_retired = true;
       } else {
-        chunk_to_push.clear();
+        current_sample_count_ += chunk_to_push.size();
+        pending_chunk_pcm_.erase(pending_chunk_pcm_.begin(),
+                                 pending_chunk_pcm_.begin() +
+                                     static_cast<std::ptrdiff_t>(chunk_to_push.size()));
+        ApplyRecognitionEvents(events, &latest_final_text_, &first_partial_logged_,
+                               recording_started_at_, first_non_silent_at_, dbus_);
+        keep_processing = pending_chunk_pcm_.size() >= kStreamingChunkSamples;
+        if (keep_processing) {
+          chunk_to_push.assign(pending_chunk_pcm_.begin(),
+                               pending_chunk_pcm_.begin() +
+                                   static_cast<std::ptrdiff_t>(kStreamingChunkSamples));
+          recording_started_at = recording_started_at_;
+          first_non_silent_at = first_non_silent_at_;
+        } else {
+          chunk_to_push.clear();
+        }
       }
+    }
+
+    if (session_retired) {
+      WakeMainThread();
+      return;
     }
 
     if (!keep_processing) {
@@ -630,12 +652,31 @@ void DaemonRuntimeController::RestoreOutputIfDucked() {
   output_ducker_.Restore();
 }
 
-void DaemonRuntimeController::ScheduleCaptureStopOnMainThread() {
-  pending_capture_stop_.store(true, std::memory_order_release);
+void DaemonRuntimeController::WakeMainThread() const {
   if (notify_fd_ >= 0) {
     uint64_t value = 1;
     (void)write(notify_fd_, &value, sizeof(value));
   }
+}
+
+void DaemonRuntimeController::RetireCancelledSession(
+    std::shared_ptr<vinput::daemon::asr::RecognitionSession> session) {
+  if (!session) {
+    return;
+  }
+  {
+    const std::scoped_lock lock(state_mutex_);
+    deferred_cancelled_sessions_.push_back(std::move(session));
+  }
+  // Wake only after the deferred vector owns the session: an earlier wake
+  // could let FlushDeferredActions clear it before the transfer, making the
+  // caller's thread the last owner again.
+  WakeMainThread();
+}
+
+void DaemonRuntimeController::ScheduleCaptureStopOnMainThread() {
+  pending_capture_stop_.store(true, std::memory_order_release);
+  WakeMainThread();
 }
 
 DbusService::MethodResult DaemonRuntimeController::StopRecording(const std::string& scene_id) {
@@ -745,8 +786,13 @@ DbusService::MethodResult DaemonRuntimeController::StopRecording(const std::stri
   }
 
   if (session_to_cancel) {
-    std::lock_guard<std::mutex> session_lock(session_io_mutex_);
-    session_to_cancel->Cancel();
+    {
+      const std::scoped_lock session_lock(session_io_mutex_);
+      session_to_cancel->Cancel();
+    }
+    // See CancelOperation: retire via the deferred main-thread path instead
+    // of joining the async worker here when the local reference is released.
+    RetireCancelledSession(std::move(session_to_cancel));
   }
 
   if (apply_pending_reload) {
@@ -799,6 +845,16 @@ int DaemonRuntimeController::GetNotifyFd() const {
 }
 
 void DaemonRuntimeController::FlushDeferredActions() {
+  // Drain the notify fd before swapping the deferred vector: a session
+  // enqueued after the swap must keep its wake for the next main-loop
+  // iteration, otherwise it could linger in the vector until an unrelated
+  // notification. A session enqueued before the swap is taken below.
+  if (notify_fd_ >= 0) {
+    uint64_t value = 0;
+    while (read(notify_fd_, &value, sizeof(value)) == sizeof(value)) {
+    }
+  }
+
   {
     std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>> deferred;
     {
@@ -806,12 +862,6 @@ void DaemonRuntimeController::FlushDeferredActions() {
       deferred.swap(deferred_cancelled_sessions_);
     }
     deferred.clear(); // Joins async workers on this (main) thread.
-  }
-
-  if (notify_fd_ >= 0) {
-    uint64_t value = 0;
-    while (read(notify_fd_, &value, sizeof(value)) == sizeof(value)) {
-    }
   }
 
   if (!pending_capture_stop_.exchange(false, std::memory_order_acq_rel)) {
