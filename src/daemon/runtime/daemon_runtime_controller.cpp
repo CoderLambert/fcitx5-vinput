@@ -615,7 +615,7 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
         // already owns cancellation of the old session, and the deferred
         // vector only holds an extra reference if another owner (e.g.
         // current_order_) still has one, so a newer session is unaffected.
-        deferred_cancelled_sessions_.push_back(std::move(session));
+        deferred_cancelled_sessions_.push_back(session);
         session_retired = true;
       } else {
         current_sample_count_ += chunk_to_push.size();
@@ -652,7 +652,7 @@ void DaemonRuntimeController::RestoreOutputIfDucked() {
   output_ducker_.Restore();
 }
 
-void DaemonRuntimeController::WakeMainThread() {
+void DaemonRuntimeController::WakeMainThread() const {
   if (notify_fd_ >= 0) {
     uint64_t value = 1;
     (void)write(notify_fd_, &value, sizeof(value));
@@ -787,7 +787,7 @@ DbusService::MethodResult DaemonRuntimeController::StopRecording(const std::stri
 
   if (session_to_cancel) {
     {
-      std::lock_guard<std::mutex> session_lock(session_io_mutex_);
+      const std::scoped_lock session_lock(session_io_mutex_);
       session_to_cancel->Cancel();
     }
     // See CancelOperation: retire via the deferred main-thread path instead
@@ -845,6 +845,16 @@ int DaemonRuntimeController::GetNotifyFd() const {
 }
 
 void DaemonRuntimeController::FlushDeferredActions() {
+  // Drain the notify fd before swapping the deferred vector: a session
+  // enqueued after the swap must keep its wake for the next main-loop
+  // iteration, otherwise it could linger in the vector until an unrelated
+  // notification. A session enqueued before the swap is taken below.
+  if (notify_fd_ >= 0) {
+    uint64_t value = 0;
+    while (read(notify_fd_, &value, sizeof(value)) == sizeof(value)) {
+    }
+  }
+
   {
     std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>> deferred;
     {
@@ -852,12 +862,6 @@ void DaemonRuntimeController::FlushDeferredActions() {
       deferred.swap(deferred_cancelled_sessions_);
     }
     deferred.clear(); // Joins async workers on this (main) thread.
-  }
-
-  if (notify_fd_ >= 0) {
-    uint64_t value = 0;
-    while (read(notify_fd_, &value, sizeof(value)) == sizeof(value)) {
-    }
   }
 
   if (!pending_capture_stop_.exchange(false, std::memory_order_acq_rel)) {

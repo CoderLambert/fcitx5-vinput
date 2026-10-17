@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -62,7 +63,7 @@ private:
   void MaybeApplyPendingAsrBackendReload();
   void HandleIncomingAudio(std::span<const int16_t> pcm);
   void ScheduleCaptureStopOnMainThread();
-  void WakeMainThread();
+  void WakeMainThread() const;
   // Moves a cancelled session into deferred_cancelled_sessions_ (destroyed,
   // worker joined, in FlushDeferredActions on the main thread) and wakes the
   // main thread. The caller must not hold state_mutex_.
