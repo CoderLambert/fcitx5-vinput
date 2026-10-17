@@ -10,6 +10,7 @@
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
 #include <spa/pod/builder.h>
+#include <utility>
 #include <vector>
 
 #include "common/audio/pipewire_device.h"
@@ -560,7 +561,7 @@ std::vector<int16_t> AudioCapture::StopAndGetBuffer() {
     DestroyStream();
   }
   std::lock_guard<std::mutex> lock(buffer_mutex_);
-  auto result = pcm_buffer_;
+  auto result = std::move(pcm_buffer_);
   pcm_buffer_.clear();
   return result;
 }

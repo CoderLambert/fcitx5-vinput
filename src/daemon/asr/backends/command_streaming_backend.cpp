@@ -1,5 +1,6 @@
 #include "daemon/asr/backends/command_streaming_backend.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -15,6 +16,7 @@
 #include <spawn.h>
 #include <string>
 #include <string_view>
+#include <sys/poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
@@ -36,6 +38,9 @@ using json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
 constexpr int kPollSliceMs = 50;
+constexpr int kDefaultWriteTimeoutMs = 5000;
+constexpr int kMaxWriteTimeoutMs = 30000;
+constexpr std::size_t kDrainBudgetBytes = std::size_t{64} * 1024;
 constexpr int kAwaitFinalTimeoutMs = 10000;
 constexpr int kFinalGraceMs = 200;
 
@@ -373,7 +378,9 @@ public:
   void Cancel() override {
     if (!cancelled_) {
       cancelled_ = true;
-      if (EnsureStarted(nullptr)) {
+      // Cancel does not start a new child. For a running provider the
+      // notification is best-effort and is itself subject to a finite deadline.
+      if (started_ && !child_.stdin_closed && child_.stdin_fd >= 0) {
         SendControlEvent("cancel", nullptr);
       }
     }
@@ -389,6 +396,12 @@ public:
 
 private:
   bool EnsureStarted(std::string* error) {
+    if (cancelled_) {
+      if (error != nullptr) {
+        *error = "Recognition session already cancelled.";
+      }
+      return false;
+    }
     if (started_) {
       return true;
     }
@@ -442,10 +455,16 @@ private:
     std::string line = payload.dump();
     line.push_back('\n');
     std::size_t offset = 0;
+    // Each outbound message has its own deadline. A prolonged recording
+    // must not be limited by the budget of its first chunk.
+    const int write_timeout_ms = provider_.timeoutMs > 0
+                                     ? std::min(provider_.timeoutMs, kMaxWriteTimeoutMs)
+                                     : kDefaultWriteTimeoutMs;
+    const auto write_deadline = Clock::now() + std::chrono::milliseconds(write_timeout_ms);
     while (offset < line.size()) {
-      if (HasTimedOut(deadline_)) {
+      if (HasTimedOut(write_deadline) || HasTimedOut(deadline_)) {
         if (error) {
-          *error = FormatProviderError(std::move(stderr_tail_), "timed out.");
+          *error = FormatProviderError(std::move(stderr_tail_), "provider write timed out.");
         }
         return false;
       }
@@ -453,7 +472,8 @@ private:
       pollfd fd{};
       fd.fd = child_.stdin_fd;
       fd.events = POLLOUT;
-      const int rc = poll(&fd, 1, RemainingMs(deadline_, kPollSliceMs));
+      const auto deadline = std::min(write_deadline, deadline_);
+      const int rc = poll(&fd, 1, RemainingMs(deadline, kPollSliceMs));
       if (rc < 0) {
         if (errno == EINTR) {
           continue;
@@ -464,23 +484,29 @@ private:
         return false;
       }
       if (rc == 0) {
+        // Providers may emit output before reading more stdin; draining it
+        // (bounded per call in PumpIo/Drain*) keeps both pipe directions
+        // moving without extending the absolute write deadline.
+        PumpIo(0, nullptr);
         continue;
       }
-      if (fd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+
+      if ((fd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
         if (error) {
           *error = FormatProviderError(std::move(stderr_tail_), "provider closed stdin.");
         }
         return false;
       }
+      if ((fd.revents & POLLOUT) == 0) {
+        continue;
+      }
 
       const ssize_t written = write(child_.stdin_fd, line.data() + offset, line.size() - offset);
       if (written > 0) {
         offset += static_cast<std::size_t>(written);
-        PumpIo(0, nullptr);
         continue;
       }
       if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-        PumpIo(0, nullptr);
         continue;
       }
       if (error) {
@@ -569,9 +595,11 @@ private:
 
   bool DrainStdout(std::string* error) {
     char buffer[4096];
-    while (true) {
-      const ssize_t n = read(child_.stdout_fd, buffer, sizeof(buffer));
+    std::size_t remaining_budget = kDrainBudgetBytes;
+    while (remaining_budget > 0) {
+      const ssize_t n = read(child_.stdout_fd, buffer, std::min(sizeof(buffer), remaining_budget));
       if (n > 0) {
+        remaining_budget -= static_cast<std::size_t>(n);
         stdout_buffer_.append(buffer, static_cast<std::size_t>(n));
         ConsumeStdoutLines(error);
         if (error && !error->empty()) {
@@ -599,9 +627,11 @@ private:
 
   void DrainStderr() {
     char buffer[4096];
-    while (true) {
-      const ssize_t n = read(child_.stderr_fd, buffer, sizeof(buffer));
+    std::size_t remaining_budget = kDrainBudgetBytes;
+    while (remaining_budget > 0) {
+      const ssize_t n = read(child_.stderr_fd, buffer, std::min(sizeof(buffer), remaining_budget));
       if (n > 0) {
+        remaining_budget -= static_cast<std::size_t>(n);
         stderr_buffer_.append(buffer, static_cast<std::size_t>(n));
         ConsumeStderrLines();
         continue;
