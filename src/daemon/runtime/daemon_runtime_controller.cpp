@@ -16,6 +16,7 @@
 #include "common/asr/recognition_result.h"
 #include "common/config/core_config.h"
 #include "common/dbus/dbus_interface.h"
+#include "common/dbus/error_info.h"
 #include "common/i18n.h"
 #include "common/utils/debug_log.h"
 
@@ -160,7 +161,9 @@ vinput::daemon::asr::RecognitionRunResult FinishSessionAndCollectResult(
       break;
     case vinput::daemon::asr::RecognitionEventKind::Error:
       result.ok = false;
-      result.error = std::move(event.error);
+      if (!event.error.empty()) {
+        result.error = std::move(event.error);
+      }
       break;
     case vinput::daemon::asr::RecognitionEventKind::Completed:
       break;
@@ -952,6 +955,7 @@ void DaemonRuntimeController::WorkerMain() {
     }
 
     try {
+      bool recognition_failed = false;
       auto runtime_settings = LoadCoreConfig();
       NormalizeCoreConfig(&runtime_settings);
 
@@ -980,16 +984,26 @@ void DaemonRuntimeController::WorkerMain() {
         auto result =
             FinishSessionAndCollectResult(order.session, &session_io_mutex_, &recognition_error);
         if (!result.ok || !result.error.empty()) {
-          throw std::runtime_error(result.error.empty() ? kFailedToFinishSessionError
-                                                        : result.error);
-        }
-        if (!result.text.empty()) {
+          // Preserve the structured error classification (as the previous
+          // error path did) instead of routing this through the generic
+          // exception handler, which would downgrade it to a raw error.
+          const std::string failure =
+              result.error.empty() ? kFailedToFinishSessionError : result.error;
+          fprintf(stderr, "vinput-daemon: recognition error: %s\n", failure.c_str());
+          dbus_->EmitNotification(vinput::dbus::ClassifyErrorText(failure));
+          recognition_failed = true;
+        } else if (!result.text.empty()) {
           order.recognized_text = std::move(result.text);
           // RecognitionPartial is also the protocol's transcript-update signal.
           dbus_->EmitRecognitionPartial(order.recognized_text);
         }
         order.pcm.clear();
         order.session.reset();
+      }
+
+      if (recognition_failed) {
+        ResetToIdle();
+        continue;
       }
 
       postprocessing_cancel_requested_.store(false, std::memory_order_relaxed);

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -31,6 +32,10 @@ AsyncRecognitionSession::~AsyncRecognitionSession() {
 }
 
 bool AsyncRecognitionSession::PushAudio(std::span<const int16_t> pcm, std::string* error) {
+  // On overflow the queued chunks are moved here and destroyed after the
+  // lock is released below, so freeing them does not extend the time the
+  // capture callback holds mutex_ (the queue is bounded, see header).
+  std::deque<std::vector<int16_t>> discarded;
   {
     const std::scoped_lock lock(mutex_);
     if (cancel_requested_ || finish_requested_ || complete_) {
@@ -54,6 +59,7 @@ bool AsyncRecognitionSession::PushAudio(std::span<const int16_t> pcm, std::strin
           pcm.size() > max_samples - dropped_samples_ ? max_samples : dropped_samples_ + pcm.size();
       error_ = "Streaming recognition queue overflowed; audio chunk was dropped.";
       cancel_requested_ = true;
+      discarded = std::move(queue_);
       queue_.clear();
       queued_samples_ = 0;
       wake_.notify_one();
