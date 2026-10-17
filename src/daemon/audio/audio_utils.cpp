@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <span>
 
 namespace vinput::audio {
 
@@ -36,7 +37,7 @@ void ApplyGain(std::vector<float>& samples, float gain) {
   }
 }
 
-void ApplyGainI16(std::vector<int16_t>& samples, float gain) {
+void ApplyGainI16(std::span<int16_t> samples, float gain) {
   if (samples.empty() || gain == 1.0F) {
     return;
   }
@@ -45,6 +46,10 @@ void ApplyGainI16(std::vector<int16_t>& samples, float gain) {
     const float scaled = static_cast<float>(s) * gain;
     s = static_cast<int16_t>(std::clamp(scaled, -32768.0F, 32767.0F));
   }
+}
+
+void ApplyGainI16(std::vector<int16_t>& samples, float gain) {
+  ApplyGainI16(std::span<int16_t>(samples), gain);
 }
 
 } // namespace vinput::audio
