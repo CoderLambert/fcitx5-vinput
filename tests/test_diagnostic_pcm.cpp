@@ -18,13 +18,13 @@ void Check(bool condition, const char* description) {
 }
 
 void TestConversionAndEmptyInput() {
-  const std::array<float, 7> input = {-2.0f, -1.0f, -0.5f, 0.0f, 0.5f, 1.0f, 2.0f};
+  const std::array<float, 7> input = {-2.0F, -1.0F, -0.5F, 0.0F, 0.5F, 1.0F, 2.0F};
   const std::array<int16_t, 7> expected = {-32767, -32767, -16383, 0, 16383, 32767, 32767};
   std::vector<int16_t> output;
   vinput::daemon::asr::AppendDiagnosticPcm(output, input);
   Check(output.size() == expected.size(), "conversion preserves sample count");
   for (std::size_t i = 0; i < input.size(); ++i) {
-    Check(output[i] == expected[i], "conversion preserves existing rounding and clipping");
+    Check(output.at(i) == expected.at(i), "conversion preserves existing rounding and clipping");
   }
   vinput::daemon::asr::AppendDiagnosticPcm(output, {});
   Check(output.size() == expected.size(), "empty input leaves the buffer unchanged");
@@ -35,7 +35,7 @@ void TestRepeatedChunks(int audio_seconds) {
   constexpr std::size_t kChunkSamples = 800;
   std::array<float, kChunkSamples> chunk{};
   for (std::size_t i = 0; i < chunk.size(); ++i) {
-    chunk[i] = static_cast<float>(static_cast<int>(i % 201) - 100) / 100.0f;
+    chunk.at(i) = static_cast<float>(static_cast<int>(i % 201) - 100) / 100.0F;
   }
 
   std::vector<int16_t> output;
@@ -48,9 +48,9 @@ void TestRepeatedChunks(int audio_seconds) {
   }
   Check(output.size() == chunk_count * kChunkSamples, "no samples dropped in repeated chunks");
   for (std::size_t i = 0; i < output.size(); ++i) {
-    const auto sample = chunk[i % kChunkSamples];
-    const auto expected = static_cast<int16_t>(sample * 32767.0f);
-    Check(output[i] == expected, "repeated chunks preserve every sample");
+    const auto sample = chunk.at(i % kChunkSamples);
+    const auto expected = static_cast<int16_t>(sample * 32767.0F);
+    Check(output.at(i) == expected, "repeated chunks preserve every sample");
   }
   Check(growth_events < chunk_count / 4, "capacity does not grow on nearly every chunk");
   std::cout << audio_seconds << " seconds equivalent PCM: " << growth_events
@@ -59,7 +59,7 @@ void TestRepeatedChunks(int audio_seconds) {
 
 void TestLargeChunkAndReset() {
   std::vector<int16_t> output;
-  const std::vector<float> large_chunk(16000, 0.25f);
+  const std::vector<float> large_chunk(16000, 0.25F);
   vinput::daemon::asr::AppendDiagnosticPcm(output, large_chunk);
   Check(output.size() == large_chunk.size(), "large chunk preserves length");
   Check(output.front() == 8191 && output.back() == 8191, "large chunk preserves conversion");
