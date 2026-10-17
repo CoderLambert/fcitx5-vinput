@@ -524,6 +524,18 @@ private:
     }
 
     const int timeout_ms = HasTimedOut(deadline_) ? 0 : RemainingMs(deadline_, poll_timeout_ms);
+    // Once both output pipes reach EOF, Finish may still be waiting for the
+    // provider to exit. A bounded wait prevents a tight waitpid(WNOHANG) loop.
+    // Preserve PumpIo(0)'s nonblocking behavior for live audio ingestion.
+    if (nfds == 0 && !child_.child_exited && timeout_ms > 0) {
+      const int rc = poll(nullptr, 0, timeout_ms);
+      if (rc < 0 && errno != EINTR) {
+        if (error != nullptr) {
+          *error = std::string("poll failed: ") + std::strerror(errno);
+        }
+        return false;
+      }
+    }
     if (nfds > 0) {
       const int rc = poll(fds, nfds, timeout_ms);
       if (rc < 0 && errno != EINTR) {
