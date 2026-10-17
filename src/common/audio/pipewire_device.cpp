@@ -1,14 +1,19 @@
 #include "common/audio/pipewire_device.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <ctime>
+#include <pipewire/context.h>
+#include <pipewire/core.h>
 #include <pipewire/keys.h>
 #include <pipewire/loop.h>
 #include <pipewire/main-loop.h>
 #include <pipewire/pipewire.h>
+#include <pipewire/proxy.h>
 #include <spa/support/loop.h>
 #include <spa/utils/dict.h>
+#include <spa/utils/hook.h>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,13 +24,13 @@ namespace vinput::pw {
 namespace {
 
 struct PwData {
-  pw_main_loop* loop;
-  pw_context* context;
-  pw_core* core;
-  pw_registry* registry;
+  pw_main_loop* loop = nullptr;
+  pw_context* context = nullptr;
+  pw_core* core = nullptr;
+  pw_registry* registry = nullptr;
   spa_hook registry_listener;
   spa_hook core_listener;
-  int pending_sync;
+  int pending_sync = -1;
   std::vector<DeviceInfo> devices;
 };
 
@@ -119,6 +124,38 @@ std::vector<DeviceInfo> EnumerateAudioSources() {
   pw_init(nullptr, nullptr);
 
   PwData data{};
+  struct PwResourceGuard {
+    PwData* d = nullptr;
+
+    explicit PwResourceGuard(PwData* data_ptr) : d(data_ptr) {}
+    ~PwResourceGuard() {
+      if (d == nullptr) {
+        return;
+      }
+      if (d->registry != nullptr) {
+        spa_hook_remove(&d->registry_listener);
+        pw_proxy_destroy(std::bit_cast<pw_proxy*>(d->registry));
+      }
+      if (d->core != nullptr) {
+        spa_hook_remove(&d->core_listener);
+        pw_core_disconnect(d->core);
+      }
+      if (d->context != nullptr) {
+        pw_context_destroy(d->context);
+      }
+      if (d->loop != nullptr) {
+        pw_main_loop_destroy(d->loop);
+      }
+      pw_deinit();
+    }
+
+    PwResourceGuard(const PwResourceGuard&) = delete;
+    PwResourceGuard& operator=(const PwResourceGuard&) = delete;
+    PwResourceGuard(PwResourceGuard&&) = delete;
+    PwResourceGuard& operator=(PwResourceGuard&&) = delete;
+  };
+  const PwResourceGuard guard{&data};
+
   data.loop = pw_main_loop_new(nullptr);
   if (!data.loop) {
     return {};
@@ -126,14 +163,11 @@ std::vector<DeviceInfo> EnumerateAudioSources() {
 
   data.context = pw_context_new(pw_main_loop_get_loop(data.loop), nullptr, 0);
   if (!data.context) {
-    pw_main_loop_destroy(data.loop);
     return {};
   }
 
   data.core = pw_context_connect(data.context, nullptr, 0);
   if (!data.core) {
-    pw_context_destroy(data.context);
-    pw_main_loop_destroy(data.loop);
     return {};
   }
 
@@ -176,11 +210,6 @@ std::vector<DeviceInfo> EnumerateAudioSources() {
       utils->destroy_source(u_data, timer);
     }
   }
-
-  pw_proxy_destroy(reinterpret_cast<pw_proxy*>(data.registry));
-  pw_core_disconnect(data.core);
-  pw_context_destroy(data.context);
-  pw_main_loop_destroy(data.loop);
 
   std::stable_sort(data.devices.begin(), data.devices.end(),
                    [](const DeviceInfo& a, const DeviceInfo& b) {
