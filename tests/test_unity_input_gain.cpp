@@ -19,7 +19,7 @@ void Require(bool condition, const char* name) {
 void TestUnityGainBorrowsOriginalInput() {
   const std::array<int16_t, 4> input{1000, -1000, 20000, -20000};
   std::vector<int16_t> scratch;
-  const auto view = vinput::audio::PrepareGainAdjustedInput(input, 1.0f, &scratch);
+  const auto view = vinput::audio::PrepareGainAdjustedInput(input, 1.0F, &scratch);
   Require(view.data() == input.data(), "unity gain must use original PCM pointer");
   Require(view.size() == input.size(), "unity gain length");
   Require(scratch.empty(), "unity gain must not allocate scratch PCM");
@@ -28,23 +28,24 @@ void TestUnityGainBorrowsOriginalInput() {
 void TestNonUnityGainUsesScratch() {
   const std::array<int16_t, 4> input{1000, -1000, 20000, -20000};
   std::vector<int16_t> scratch;
-  const auto view = vinput::audio::PrepareGainAdjustedInput(input, 2.0f, &scratch);
+  const auto view = vinput::audio::PrepareGainAdjustedInput(input, 2.0F, &scratch);
   Require(view.data() == scratch.data(), "non-unity gain must own scratch samples");
-  Require(input[0] == 1000, "raw PCM remains unchanged");
+  Require(input.at(0) == 1000, "raw PCM remains unchanged");
   const std::array<int16_t, 4> expected{2000, -2000, 32767, -32768};
   for (std::size_t i = 0; i < expected.size(); ++i) {
-    Require(view[i] == expected[i], "gain clipping and sample order unchanged");
+    Require(*(view.begin() + static_cast<std::ptrdiff_t>(i)) == expected.at(i),
+            "gain clipping and sample order unchanged");
   }
 }
 
 void TestEmptyAndFractional() {
   const std::vector<int16_t> empty;
   std::vector<int16_t> scratch;
-  const auto borrowed = vinput::audio::PrepareGainAdjustedInput(empty, 0.5f, &scratch);
+  const auto borrowed = vinput::audio::PrepareGainAdjustedInput(empty, 0.5F, &scratch);
   Require(borrowed.empty() && scratch.empty(), "empty input remains empty");
   const std::array<int16_t, 3> input{1001, -1001, 32767};
-  const auto view = vinput::audio::PrepareGainAdjustedInput(input, 0.5f, &scratch);
-  Require(view[0] == 500 && view[1] == -500 && view[2] == 16383,
+  const auto view = vinput::audio::PrepareGainAdjustedInput(input, 0.5F, &scratch);
+  Require(*view.begin() == 500 && *(view.begin() + 1) == -500 && *(view.begin() + 2) == 16383,
           "fractional gain matches previous truncation semantics");
 }
 
