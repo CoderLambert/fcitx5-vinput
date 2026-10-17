@@ -12,9 +12,7 @@ namespace vinput::daemon::runtime {
 // Preserves the mic samples arriving during ASR session initialization.
 class StartupPcmBuffer {
 public:
-  void Append(std::span<const int16_t> pcm) {
-    data_.insert(data_.end(), pcm.begin(), pcm.end());
-  }
+  void Append(std::span<const int16_t> pcm) { data_.insert(data_.end(), pcm.begin(), pcm.end()); }
 
   std::vector<int16_t> TakeWithGain(float gain) {
     std::vector<int16_t> result;
