@@ -147,3 +147,10 @@ add_executable(test_startup_pcm_buffer
 )
 target_include_directories(test_startup_pcm_buffer PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_startup_pcm_buffer COMMAND test_startup_pcm_buffer)
+
+add_executable(test_audio_input_gain
+    test_audio_input_gain.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/audio/audio_utils.cpp
+)
+target_include_directories(test_audio_input_gain PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_audio_input_gain COMMAND test_audio_input_gain)

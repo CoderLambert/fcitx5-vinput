@@ -658,15 +658,23 @@ DbusService::MethodResult DaemonRuntimeController::StopRecording(const std::stri
       apply_pending_reload = true;
     } else {
       if (UsesBufferedDelivery(active_backend_)) {
+        // The capture buffer contains raw PCM; callback-side gained PCM is
+        // overwritten here. Apply the session's input gain exactly once before
+        // passing the authoritative captured samples to the buffered backend.
+        vinput::audio::ApplyGainI16(captured_pcm, current_input_gain_);
         current_recording_pcm_ = std::move(captured_pcm);
         current_sample_count_ = current_recording_pcm_.size();
       } else {
-        if (captured_pcm.size() > current_sample_count_ + pending_chunk_pcm_.size()) {
-          pending_chunk_pcm_.insert(
-              pending_chunk_pcm_.end(),
-              captured_pcm.begin() +
-                  static_cast<std::ptrdiff_t>(current_sample_count_ + pending_chunk_pcm_.size()),
-              captured_pcm.end());
+        const std::size_t raw_tail_offset = current_sample_count_ + pending_chunk_pcm_.size();
+        if (captured_pcm.size() > raw_tail_offset) {
+          // Pending chunks already received gain in HandleIncomingAudio. Only
+          // the raw tail recovered at Stop needs the same treatment.
+          vinput::audio::ApplyGainI16(std::span<int16_t>(captured_pcm).subspan(raw_tail_offset),
+                                      current_input_gain_);
+          pending_chunk_pcm_.insert(pending_chunk_pcm_.end(),
+                                    captured_pcm.begin() +
+                                        static_cast<std::ptrdiff_t>(raw_tail_offset),
+                                    captured_pcm.end());
         }
 
         if (!pending_chunk_pcm_.empty()) {
