@@ -18,4 +18,9 @@ void ApplyGain(std::vector<float>& samples, float gain);
 void ApplyGainI16(std::span<int16_t> samples, float gain);
 void ApplyGainI16(std::vector<int16_t>& samples, float gain);
 
+// At unity gain (or for empty input) returns `pcm` itself with no copy.
+// Otherwise copies into `scratch`, applies gain, and returns a span of it.
+std::span<const int16_t> PrepareGainAdjustedInput(std::span<const int16_t> pcm, float gain,
+                                                  std::vector<int16_t>* scratch);
+
 } // namespace vinput::audio

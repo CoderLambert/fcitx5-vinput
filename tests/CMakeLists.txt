@@ -139,6 +139,17 @@ target_link_libraries(test_config_migration PRIVATE
 
 add_test(NAME test_config_migration COMMAND test_config_migration)
 
+add_executable(test_buffered_capture_counter test_buffered_capture_counter.cpp)
+target_include_directories(test_buffered_capture_counter PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_buffered_capture_counter COMMAND test_buffered_capture_counter)
+
+add_executable(test_unity_input_gain
+    test_unity_input_gain.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/audio/audio_utils.cpp
+)
+target_include_directories(test_unity_input_gain PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_unity_input_gain COMMAND test_unity_input_gain)
+
 add_executable(test_async_recognition_session
     test_async_recognition_session.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/asr/runtime/async_recognition_session.cpp
@@ -149,6 +160,10 @@ add_test(NAME test_async_recognition_session COMMAND test_async_recognition_sess
 add_executable(test_diagnostic_pcm test_diagnostic_pcm.cpp)
 target_include_directories(test_diagnostic_pcm PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_diagnostic_pcm COMMAND test_diagnostic_pcm)
+
+add_executable(test_streaming_diagnostic_policy test_streaming_diagnostic_policy.cpp)
+target_include_directories(test_streaming_diagnostic_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_streaming_diagnostic_policy COMMAND test_streaming_diagnostic_policy)
 
 add_executable(test_startup_pcm_buffer
     test_startup_pcm_buffer.cpp
