@@ -5,11 +5,13 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <curl/easy.h>
+#include <curl/system.h>
 #include <iostream>
 #include <netinet/in.h>
 #include <poll.h>
 #include <string>
 #include <string_view>
+#include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <thread>
@@ -76,11 +78,9 @@ struct HttpFixture {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    Require(bind(listener, static_cast<sockaddr*>(static_cast<void*>(&addr)), sizeof(addr)) == 0,
-            "bind");
+    Require(bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0, "bind");
     socklen_t len = sizeof(addr);
-    Require(getsockname(listener, static_cast<sockaddr*>(static_cast<void*>(&addr)), &len) == 0,
-            "getsockname");
+    Require(getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len) == 0, "getsockname");
     port = ntohs(addr.sin_port);
     Require(listen(listener, 8) == 0, "listen");
     worker = std::thread([this] { Run(); });

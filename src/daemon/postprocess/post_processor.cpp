@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <curl/curl.h>
+#include <curl/easy.h>
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
