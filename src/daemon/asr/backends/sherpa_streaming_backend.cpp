@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <sherpa-onnx/c-api/c-api.h>
 #include <utility>
@@ -16,6 +17,7 @@
 #include "daemon/asr/diagnostic_pcm.h"
 #include "daemon/asr/hotword_utils.h"
 #include "daemon/asr/sherpa_json_helpers.h"
+#include "daemon/asr/streaming_diagnostic_policy.h"
 
 namespace vinput::daemon::asr {
 
@@ -107,7 +109,11 @@ public:
       samples[i] = static_cast<float>(pcm[i]) / 32768.0f;
     }
     UpdateAudioStats(samples);
-    AppendDebugPcm(samples);
+    if (diagnostics_enabled_) {
+      // Production keeps no session-sized PCM copy: diagnostic capture is
+      // opt-in and bounded to a prefix (see streaming_diagnostic_policy.h).
+      AppendDebugPcm(DiagnosticSamplePrefix(debug_pcm_.size(), samples));
+    }
 
     SherpaOnnxOnlineStreamAcceptWaveform(stream_, 16000, samples.data(),
                                          static_cast<int32_t>(samples.size()));
@@ -238,6 +244,8 @@ private:
   const SherpaOnnxOnlineRecognizer* recognizer_ = nullptr;
   const SherpaOnnxOnlineStream* stream_ = nullptr;
   bool finished_ = false;
+  const bool diagnostics_enabled_ =
+      StreamingAudioDiagnosticsEnabled(std::getenv("VINPUT_STREAMING_AUDIO_DIAGNOSTICS"));
   std::size_t total_samples_ = 0;
   double peak_abs_ = 0.0;
   double sum_squares_ = 0.0;
