@@ -350,7 +350,11 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
     }
     // Drop a stale deferred stop scheduled between the check above and now.
     pending_capture_stop_.store(false, std::memory_order_release);
+    startup_pcm_buffer_.Clear();
     start_recording_in_progress_ = true;
+    // Accept early mic callbacks into the startup buffer until CreateSession
+    // completes. They must not be discarded before the backend is ready.
+    accepting_chunks_.store(true, std::memory_order_relaxed);
   }
 
   auto runtime_settings = LoadCoreConfig();
@@ -373,6 +377,8 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       start_recording_in_progress_ = false;
+      accepting_chunks_.store(false, std::memory_order_relaxed);
+      startup_pcm_buffer_.Clear();
     }
     fprintf(stderr, "vinput-daemon: %s\n", message.c_str());
     return DbusService::MethodResult::Failure(message);
@@ -394,6 +400,8 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       start_recording_in_progress_ = false;
+      accepting_chunks_.store(false, std::memory_order_relaxed);
+      startup_pcm_buffer_.Clear();
     }
     RestoreOutputIfDucked();
     ScheduleCaptureStopOnMainThread();
@@ -407,6 +415,7 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
     if (!start_recording_in_progress_ || phase_ != vinput::dbus::Status::Idle) {
       start_recording_in_progress_ = false;
       accepting_chunks_.store(false, std::memory_order_relaxed);
+      startup_pcm_buffer_.Clear();
       abort_started_capture = true;
     } else {
       current_order_.reset();
@@ -419,6 +428,14 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
       pending_chunk_pcm_.clear();
       current_sample_count_ = 0;
       current_input_gain_ = static_cast<float>(runtime_settings.asr.inputGain);
+      if (UsesBufferedDelivery(active_backend_)) {
+        // Buffered recognition uses the complete AudioCapture buffer on Stop.
+        startup_pcm_buffer_.Clear();
+      } else {
+        // Replay the initialization prefix first, before live callbacks can
+        // acquire state_mutex_ and append their later chunks.
+        pending_chunk_pcm_ = startup_pcm_buffer_.TakeWithGain(current_input_gain_);
+      }
       latest_final_text_.clear();
       recording_started_at_ = std::chrono::steady_clock::now();
       first_non_silent_at_.reset();
@@ -467,6 +484,17 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
 void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) {
   if (!accepting_chunks_.load(std::memory_order_relaxed) || pcm.empty()) {
     return;
+  }
+
+  // AudioCapture starts before CreateSession. Until the session is ready,
+  // collect every callback in order under the same state mutex used to
+  // atomically install the live session.
+  {
+    const std::scoped_lock lock(state_mutex_);
+    if (start_recording_in_progress_ && !active_session_) {
+      startup_pcm_buffer_.Append(pcm);
+      return;
+    }
   }
 
   // Apply gain at the device boundary so all backends see processed audio.
@@ -704,6 +732,7 @@ DbusService::MethodResult DaemonRuntimeController::StopRecording(const std::stri
 std::shared_ptr<vinput::daemon::asr::RecognitionSession>
 DaemonRuntimeController::ReleaseActiveSessionLocked() {
   auto session = std::move(active_session_);
+  startup_pcm_buffer_.Clear();
   current_recording_pcm_.clear();
   pending_chunk_pcm_.clear();
   current_sample_count_ = 0;
@@ -844,6 +873,7 @@ void DaemonRuntimeController::ResetToIdle() {
     postprocessing_state_ = PostprocessingState::Inactive;
     postprocessing_cancel_requested_.store(false, std::memory_order_relaxed);
     current_order_.reset();
+    startup_pcm_buffer_.Clear();
     current_is_command_ = false;
     current_selected_text_.clear();
     current_recording_pcm_.clear();

@@ -18,6 +18,7 @@
 #include "daemon/audio/output_ducker.h"
 #include "daemon/runtime/dbus_service.h"
 #include "daemon/runtime/recognition_pipeline.h"
+#include "daemon/runtime/startup_pcm_buffer.h"
 
 namespace vinput::daemon::remote {
 class RemoteTextService;
@@ -86,6 +87,7 @@ private:
   vinput::daemon::asr::BackendDescriptor active_backend_;
   bool current_is_command_ = false;
   std::string current_selected_text_;
+  StartupPcmBuffer startup_pcm_buffer_;
   std::vector<int16_t> current_recording_pcm_;
   std::vector<int16_t> pending_chunk_pcm_;
   std::size_t current_sample_count_ = 0;
