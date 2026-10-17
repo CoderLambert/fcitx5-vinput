@@ -1,6 +1,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -223,6 +224,74 @@ void TestCancelReapsChild() {
   AssertChildAlreadyReaped(child_pid);
 }
 
+/** A provider may close both output pipes before exiting; wait without a CPU spin. */
+void TestOutputEofWait(bool produce_final, int id) {
+  const std::string pid_file = GetUniquePidFilePath(id);
+  unlink(pid_file.c_str());
+
+  std::string script =
+      "echo $$ > " + pid_file +
+      " && echo '{\"type\":\"session_started\"}'"
+      " && while IFS= read -r line; do case \"$line\" in *finish*) break ;; esac; done";
+  if (produce_final) {
+    script += R"( && echo '{"type":"final","text":"hello eof"}')";
+  }
+  // exec preserves the child PID while closing both pipes and waiting.
+  script += " && exec 1>&- 2>&- && exec sleep 0.45";
+
+  CommandAsrProvider provider;
+  provider.id = produce_final ? "test-final-before-eof" : "test-no-final-before-eof";
+  provider.command = "/bin/sh";
+  provider.args = {"-c", script};
+  provider.timeoutMs = 5000;
+
+  std::string error;
+  auto backend = vinput::daemon::asr::CreateCommandStreamingBackend(provider, &error);
+  ExpectTrue(backend != nullptr, "CreateCommandStreamingBackend failed: " + error);
+  auto session = backend->CreateSession(&error);
+  ExpectTrue(session != nullptr, "CreateSession failed: " + error);
+  ExpectTrue(session->PushAudio({}, &error), "PushAudio failed: " + error);
+  const int child_pid = ReadPidFileWithRetry(pid_file);
+  ExpectTrue(child_pid > 0, "Failed to read child pid before EOF test");
+
+  const std::clock_t cpu_start = std::clock();
+  const auto wall_start = std::chrono::steady_clock::now();
+  const bool finished = session->Finish(&error);
+  const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - wall_start)
+                           .count();
+  const double cpu_ms = static_cast<double>(std::clock() - cpu_start) * 1000.0 / CLOCKS_PER_SEC;
+
+  // The normal completion path lasts ~450 ms; a final result uses 200 ms grace.
+  // Avoid asserting exact timing on a shared CI runner.
+  ExpectTrue(wall_ms >= (produce_final ? 100 : 300), "EOF fixture should exercise wait state");
+  ExpectTrue(wall_ms < 3000, "EOF wait should preserve bounded completion");
+  ExpectTrue(cpu_ms < 120.0, "EOF wait should not burn an entire CPU core");
+  ExpectTrue(finished == produce_final, "Final-result success semantics must be unchanged");
+
+  const auto events = session->PollEvents();
+  int final_events = 0;
+  int error_events = 0;
+  int completed_events = 0;
+  for (const auto& event : events) {
+    if (event.kind == vinput::daemon::asr::RecognitionEventKind::FinalText) {
+      ++final_events;
+      ExpectTrue(event.text == "hello eof", "Unexpected final text");
+    }
+    if (event.kind == vinput::daemon::asr::RecognitionEventKind::Error) {
+      ++error_events;
+    }
+    if (event.kind == vinput::daemon::asr::RecognitionEventKind::Completed) {
+      ++completed_events;
+    }
+  }
+  ExpectTrue(final_events == (produce_final ? 1 : 0), "Final event count must be preserved");
+  ExpectTrue(error_events == (produce_final ? 0 : 1), "Error event count must be preserved");
+  ExpectTrue(completed_events == 1, "Completed must be emitted exactly once");
+  AssertChildAlreadyReaped(child_pid);
+  std::cout << "EOF wait: wall=" << wall_ms << "ms CPU=" << cpu_ms << "ms\n";
+}
+
 } // namespace
 
 int main() {
@@ -231,6 +300,8 @@ int main() {
   TestDestructionReapsChild();
   TestFinalTextSessionReapsChild();
   TestCancelReapsChild();
+  TestOutputEofWait(false, 5);
+  TestOutputEofWait(true, 6);
   std::cout << "All command streaming process lifecycle tests passed successfully!\n";
   return 0;
 }
