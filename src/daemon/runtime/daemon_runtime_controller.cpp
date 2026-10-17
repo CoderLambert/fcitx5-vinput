@@ -522,7 +522,8 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
     }
 
     if (UsesBufferedDelivery(active_backend_)) {
-      current_recording_pcm_.insert(current_recording_pcm_.end(), pcm_view.begin(), pcm_view.end());
+      // AudioCapture owns the full PCM until StopAndGetBuffer() overwrites
+      // current_recording_pcm_; only the sample count is needed here.
       current_sample_count_ += pcm_view.size();
     } else {
       streaming_mode = true;
