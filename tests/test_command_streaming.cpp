@@ -1,7 +1,7 @@
 #include <cerrno>
 #include <chrono>
-#include <ctime>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -224,14 +224,13 @@ void TestCancelReapsChild() {
   AssertChildAlreadyReaped(child_pid);
 }
 
-
 /** A provider may close both output pipes before exiting; wait without a CPU spin. */
 void TestOutputEofWait(bool produce_final, int id) {
   const std::string pid_file = GetUniquePidFilePath(id);
   unlink(pid_file.c_str());
 
   std::string script =
-      "echo $ > " + pid_file +
+      "echo $$ > " + pid_file +
       " && echo '{\"type\":\"session_started\"}'"
       " && while IFS= read -r line; do case \"$line\" in *finish*) break ;; esac; done";
   if (produce_final) {
