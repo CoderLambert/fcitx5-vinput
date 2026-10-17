@@ -143,6 +143,13 @@ add_executable(test_buffered_capture_counter test_buffered_capture_counter.cpp)
 target_include_directories(test_buffered_capture_counter PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_buffered_capture_counter COMMAND test_buffered_capture_counter)
 
+add_executable(test_unity_input_gain
+    test_unity_input_gain.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/audio/audio_utils.cpp
+)
+target_include_directories(test_unity_input_gain PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_unity_input_gain COMMAND test_unity_input_gain)
+
 add_executable(test_diagnostic_pcm test_diagnostic_pcm.cpp)
 target_include_directories(test_diagnostic_pcm PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_diagnostic_pcm COMMAND test_diagnostic_pcm)
