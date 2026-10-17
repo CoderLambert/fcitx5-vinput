@@ -16,6 +16,7 @@
 #include <spawn.h>
 #include <string>
 #include <string_view>
+#include <sys/poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
