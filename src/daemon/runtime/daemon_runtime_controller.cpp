@@ -641,12 +641,12 @@ DbusService::MethodResult DaemonRuntimeController::StopRecording(const std::stri
         if (captured_pcm.size() > raw_tail_offset) {
           // Pending chunks already received gain in HandleIncomingAudio. Only
           // the raw tail recovered at Stop needs the same treatment.
-          vinput::audio::ApplyGainI16(
-              std::span<int16_t>(captured_pcm).subspan(raw_tail_offset), current_input_gain_);
-          pending_chunk_pcm_.insert(
-              pending_chunk_pcm_.end(),
-              captured_pcm.begin() + static_cast<std::ptrdiff_t>(raw_tail_offset),
-              captured_pcm.end());
+          vinput::audio::ApplyGainI16(std::span<int16_t>(captured_pcm).subspan(raw_tail_offset),
+                                      current_input_gain_);
+          pending_chunk_pcm_.insert(pending_chunk_pcm_.end(),
+                                    captured_pcm.begin() +
+                                        static_cast<std::ptrdiff_t>(raw_tail_offset),
+                                    captured_pcm.end());
         }
 
         if (!pending_chunk_pcm_.empty()) {
