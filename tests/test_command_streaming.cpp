@@ -234,7 +234,7 @@ void TestOutputEofWait(bool produce_final, int id) {
       " && echo '{\"type\":\"session_started\"}'"
       " && while IFS= read -r line; do case \"$line\" in *finish*) break ;; esac; done";
   if (produce_final) {
-    script += " && echo '{\"type\":\"final\",\"text\":\"hello eof\"}'";
+    script += R"( && echo '{"type":"final","text":"hello eof"}')";
   }
   // exec preserves the child PID while closing both pipes and waiting.
   script += " && exec 1>&- 2>&- && exec sleep 0.45";

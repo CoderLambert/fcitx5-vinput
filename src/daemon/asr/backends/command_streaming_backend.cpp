@@ -530,7 +530,7 @@ private:
     if (nfds == 0 && !child_.child_exited && timeout_ms > 0) {
       const int rc = poll(nullptr, 0, timeout_ms);
       if (rc < 0 && errno != EINTR) {
-        if (error) {
+        if (error != nullptr) {
           *error = std::string("poll failed: ") + std::strerror(errno);
         }
         return false;
