@@ -19,6 +19,7 @@
 #include "common/utils/debug_log.h"
 
 #include "daemon/audio/audio_utils.h"
+#include "daemon/audio/buffered_capture_counter.h"
 #include "daemon/remote/remote_text_service.h"
 
 namespace vinput::daemon::runtime {
@@ -524,7 +525,7 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
     if (UsesBufferedDelivery(active_backend_)) {
       // AudioCapture owns the full PCM until StopAndGetBuffer() overwrites
       // current_recording_pcm_; only the sample count is needed here.
-      current_sample_count_ += pcm_view.size();
+      vinput::audio::CountBufferedCaptureSamples(&current_sample_count_, pcm_view);
     } else {
       streaming_mode = true;
       recording_started_at = recording_started_at_;
