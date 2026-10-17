@@ -244,7 +244,7 @@ private:
   const SherpaOnnxOnlineRecognizer* recognizer_ = nullptr;
   const SherpaOnnxOnlineStream* stream_ = nullptr;
   bool finished_ = false;
-  const bool diagnostics_enabled_ =
+  bool diagnostics_enabled_ =
       StreamingAudioDiagnosticsEnabled(std::getenv("VINPUT_STREAMING_AUDIO_DIAGNOSTICS"));
   std::size_t total_samples_ = 0;
   double peak_abs_ = 0.0;
