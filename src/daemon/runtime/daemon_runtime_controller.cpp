@@ -13,6 +13,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 #include "common/asr/recognition_result.h"
 #include "common/config/core_config.h"
@@ -670,32 +671,38 @@ void DaemonRuntimeController::PollActiveSessionEvents() {
   }
 
   std::vector<vinput::daemon::asr::RecognitionEvent> events;
-  {
-    const std::scoped_lock session_lock(session_io_mutex_);
-    events = session->PollEvents();
-  }
-  // Re-read failure state after polling: a merged wake-up must not lose a
-  // backend failure that produced events (or no Error event at all).
   std::optional<std::string> failure;
-  if (auto* async_session =
-          dynamic_cast<vinput::daemon::asr::AsyncRecognitionSession*>(session.get())) {
-    failure = async_session->FailureError();
-  }
-
-  if (failure.has_value()) {
-    // FailActiveSession below emits the single error notification; do not
-    // also emit one per Error event from the same failure.
-    std::erase_if(events, [](const vinput::daemon::asr::RecognitionEvent& event) {
-      return event.kind == vinput::daemon::asr::RecognitionEventKind::Error;
-    });
-  }
-
   {
+    // Hold state_mutex_ across the poll: StopRecording transfers
+    // active_session_ to WorkerMain under the same mutex, so validating
+    // identity only after PollEvents() could drain (and then discard)
+    // events that WorkerMain still needs for the final result. PollEvents()
+    // only briefly locks the session, so this state -> session lock order
+    // matches the short critical sections elsewhere and cannot deadlock
+    // with the stop path, which never holds session_io_mutex_ while
+    // acquiring state_mutex_.
     const std::scoped_lock lock(state_mutex_);
-    // Identity check: a wake-up from a session already replaced (or handed
-    // to WorkerMain by Stop, which clears active_session_) is discarded.
     if (active_session_ != session || phase_ != vinput::dbus::Status::Recording) {
       return;
+    }
+    recording_started_at = recording_started_at_;
+    first_non_silent_at = first_non_silent_at_;
+    {
+      const std::scoped_lock session_lock(session_io_mutex_);
+      events = session->PollEvents();
+    }
+    // Re-read failure state after polling: a merged wake-up must not lose a
+    // backend failure that produced events (or no Error event at all).
+    if (auto* async_session =
+            dynamic_cast<vinput::daemon::asr::AsyncRecognitionSession*>(session.get())) {
+      failure = async_session->FailureError();
+    }
+    if (failure.has_value()) {
+      // FailActiveSession below emits the single error notification; do not
+      // also emit one per Error event from the same failure.
+      std::erase_if(events, [](const vinput::daemon::asr::RecognitionEvent& event) {
+        return event.kind == vinput::daemon::asr::RecognitionEventKind::Error;
+      });
     }
     ApplyRecognitionEvents(events, &latest_final_text_, &first_partial_logged_,
                            recording_started_at, first_non_silent_at, dbus_);

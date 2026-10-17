@@ -179,7 +179,7 @@ void AsyncRecognitionSession::Run() {
     }
 
     if (!backend_->PushAudio(chunk, &error)) {
-      AppendEvents(backend_->PollEvents());
+      auto backend_events = backend_->PollEvents();
       {
         const std::scoped_lock lock(mutex_);
         error_ = error.empty() ? "Streaming backend rejected audio." : error;
@@ -188,6 +188,10 @@ void AsyncRecognitionSession::Run() {
         queue_.clear();
         queued_samples_ = 0;
       }
+      // Publish the failure before appending events: AppendEvents wakes the
+      // controller, which must already see FailureError() so it filters the
+      // Error event below and notifies only once via FailActiveSession.
+      AppendEvents(std::move(backend_events));
       // Wake again for the failure itself: the woken thread re-reads
       // FailureError(), so this still surfaces when the backend emitted no
       // Error event (and merges harmlessly if it did).
