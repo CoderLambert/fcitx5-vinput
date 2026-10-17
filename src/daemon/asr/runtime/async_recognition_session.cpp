@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -123,11 +124,43 @@ std::size_t AsyncRecognitionSession::DroppedSamples() const {
   return dropped_samples_;
 }
 
-void AsyncRecognitionSession::AppendEvents(std::vector<RecognitionEvent> events) {
+void AsyncRecognitionSession::SetWakeCallback(WakeCallback callback) {
   const std::scoped_lock lock(mutex_);
-  for (auto& event : events) {
-    events_.push_back(std::move(event));
+  wake_callback_ = std::move(callback);
+}
+
+std::optional<std::string> AsyncRecognitionSession::FailureError() const {
+  const std::scoped_lock lock(mutex_);
+  if (!backend_failed_) {
+    return std::nullopt;
   }
+  return error_;
+}
+
+void AsyncRecognitionSession::InvokeWakeCallback() {
+  WakeCallback callback;
+  {
+    const std::scoped_lock lock(mutex_);
+    callback = wake_callback_;
+  }
+  // Invoked without mutex_ held: the callback may query this session, and no
+  // lock ordering is imposed on the woken thread's own wake primitive.
+  if (callback) {
+    callback();
+  }
+}
+
+void AsyncRecognitionSession::AppendEvents(std::vector<RecognitionEvent> events) {
+  if (events.empty()) {
+    return;
+  }
+  {
+    const std::scoped_lock lock(mutex_);
+    for (auto& event : events) {
+      events_.push_back(std::move(event));
+    }
+  }
+  InvokeWakeCallback();
 }
 
 void AsyncRecognitionSession::Complete(bool success, std::string error) {
@@ -171,14 +204,23 @@ void AsyncRecognitionSession::Run() {
     }
 
     if (!backend_->PushAudio(chunk, &error)) {
-      AppendEvents(backend_->PollEvents());
+      auto backend_events = backend_->PollEvents();
       {
         const std::scoped_lock lock(mutex_);
         error_ = error.empty() ? "Streaming backend rejected audio." : error;
+        backend_failed_ = true;
         cancel_requested_ = true;
         queue_.clear();
         queued_samples_ = 0;
       }
+      // Publish the failure before appending events: AppendEvents wakes the
+      // controller, which must already see FailureError() so it filters the
+      // Error event below and notifies only once via FailActiveSession.
+      AppendEvents(std::move(backend_events));
+      // Wake again for the failure itself: the woken thread re-reads
+      // FailureError(), so this still surfaces when the backend emitted no
+      // Error event (and merges harmlessly if it did).
+      InvokeWakeCallback();
       break;
     }
     AppendEvents(backend_->PollEvents());

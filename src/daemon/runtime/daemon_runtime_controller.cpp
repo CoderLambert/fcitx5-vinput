@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -12,6 +13,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 #include "common/asr/recognition_result.h"
 #include "common/config/core_config.h"
@@ -421,7 +423,24 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
     // the capture callback then only enqueues owned chunks. Installation
     // still happens under state_mutex_ below, so the StartupPcmBuffer prefix
     // replay order is unchanged.
-    session = std::make_unique<vinput::daemon::asr::AsyncRecognitionSession>(std::move(session));
+    auto async_session =
+        std::make_unique<vinput::daemon::asr::AsyncRecognitionSession>(std::move(session));
+    // Wake the main loop when the worker appends events or fails, so a
+    // PartialText produced after the last audio chunk is not stranded until
+    // the next chunk. The callback captures only the notify fd by value --
+    // never `this`: it runs on the worker thread and may only write the
+    // (non-blocking) eventfd. Ownership: every async session is held by
+    // active_session_, current_order_, or deferred_cancelled_sessions_, and
+    // Shutdown() cancels/destroys all of them (joining their workers in the
+    // session destructor) before the destructor closes notify_fd_, so the
+    // fd outlives every possible callback invocation.
+    async_session->SetWakeCallback([notify_fd = notify_fd_] {
+      if (notify_fd >= 0) {
+        const uint64_t value = 1;
+        (void)write(notify_fd, &value, sizeof(value));
+      }
+    });
+    session = std::move(async_session);
   }
 
   bool abort_started_capture = false;
@@ -552,52 +571,17 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
 
   while (streaming_mode && !chunk_to_push.empty()) {
     std::string push_error;
-    std::vector<vinput::daemon::asr::RecognitionEvent> events;
     bool pushed = false;
     {
       std::lock_guard<std::mutex> session_lock(session_io_mutex_);
       pushed = session->PushAudio(chunk_to_push, &push_error);
-      if (!pushed) {
-        events.clear();
-      } else {
-        events = session->PollEvents();
-      }
     }
     if (!pushed && push_error.empty()) {
       push_error = kFailedToPushAudioError;
     }
 
     if (!pushed || !push_error.empty()) {
-      std::shared_ptr<vinput::daemon::asr::RecognitionSession> session_to_cancel;
-      bool session_was_active = false;
-      {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        if (active_session_ == session) {
-          session_was_active = true;
-          fprintf(stderr, "vinput-daemon: failed to push audio chunk: %s\n", push_error.c_str());
-          accepting_chunks_.store(false, std::memory_order_relaxed);
-          session_to_cancel = ReleaseActiveSessionLocked();
-          phase_ = vinput::dbus::Status::Error;
-        }
-      }
-      if (session_to_cancel) {
-        {
-          const std::scoped_lock session_lock(session_io_mutex_);
-          session_to_cancel->Cancel();
-        }
-        // Destroying the async session joins its worker; do that on the main
-        // thread (FlushDeferredActions), not on this capture callback.
-        const std::scoped_lock lock(state_mutex_);
-        deferred_cancelled_sessions_.push_back(std::move(session_to_cancel));
-      }
-      if (!session_was_active) {
-        return;
-      }
-      dbus_->EmitStatusChanged(vinput::dbus::StatusToString(vinput::dbus::Status::Error));
-      dbus_->EmitNotification(vinput::dbus::MakeRawError(push_error));
-      capture_->EndRecording();
-      RestoreOutputIfDucked();
-      ScheduleCaptureStopOnMainThread();
+      FailActiveSession(session, push_error);
       return;
     }
 
@@ -618,6 +602,16 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
         deferred_cancelled_sessions_.push_back(session);
         session_retired = true;
       } else {
+        // Drain and apply atomically under state_mutex_ (PollActiveSessionEvents
+        // does the same on the main thread): draining here and applying later
+        // could let a newer batch from the main thread be applied first and
+        // then be overwritten by this older batch.
+        std::vector<vinput::daemon::asr::RecognitionEvent> events;
+        if (pushed) {
+          const std::scoped_lock session_lock(session_io_mutex_);
+          events = session->PollEvents();
+        }
+
         current_sample_count_ += chunk_to_push.size();
         pending_chunk_pcm_.erase(pending_chunk_pcm_.begin(),
                                  pending_chunk_pcm_.begin() +
@@ -672,6 +666,99 @@ void DaemonRuntimeController::RetireCancelledSession(
   // could let FlushDeferredActions clear it before the transfer, making the
   // caller's thread the last owner again.
   WakeMainThread();
+}
+
+bool DaemonRuntimeController::FailActiveSession(
+    const std::shared_ptr<vinput::daemon::asr::RecognitionSession>& session,
+    const std::string& error_message) {
+  std::shared_ptr<vinput::daemon::asr::RecognitionSession> session_to_cancel;
+  {
+    const std::scoped_lock lock(state_mutex_);
+    if (active_session_ != session) {
+      return false;
+    }
+    fprintf(stderr, "vinput-daemon: failed to push audio chunk: %s\n", error_message.c_str());
+    accepting_chunks_.store(false, std::memory_order_relaxed);
+    session_to_cancel = ReleaseActiveSessionLocked();
+    phase_ = vinput::dbus::Status::Error;
+  }
+  if (session_to_cancel) {
+    {
+      const std::scoped_lock session_lock(session_io_mutex_);
+      session_to_cancel->Cancel();
+    }
+    // Destroying the async session joins its worker; do that on the main
+    // thread (FlushDeferredActions), not on this capture callback.
+    const std::scoped_lock lock(state_mutex_);
+    deferred_cancelled_sessions_.push_back(std::move(session_to_cancel));
+  }
+  // phase_ is already Error and the session is no longer active, so a
+  // repeated wake-up for the same failure is discarded by the identity
+  // checks in PollActiveSessionEvents/FailActiveSession: notified once.
+  dbus_->EmitStatusChanged(vinput::dbus::StatusToString(vinput::dbus::Status::Error));
+  dbus_->EmitNotification(vinput::dbus::MakeRawError(error_message));
+  capture_->EndRecording();
+  RestoreOutputIfDucked();
+  ScheduleCaptureStopOnMainThread();
+  return true;
+}
+
+void DaemonRuntimeController::PollActiveSessionEvents() {
+  std::shared_ptr<vinput::daemon::asr::RecognitionSession> session;
+  std::optional<std::chrono::steady_clock::time_point> recording_started_at;
+  std::optional<std::chrono::steady_clock::time_point> first_non_silent_at;
+  {
+    const std::scoped_lock lock(state_mutex_);
+    if (phase_ != vinput::dbus::Status::Recording || !active_session_ ||
+        UsesBufferedDelivery(active_backend_)) {
+      return;
+    }
+    session = active_session_;
+    recording_started_at = recording_started_at_;
+    first_non_silent_at = first_non_silent_at_;
+  }
+
+  std::vector<vinput::daemon::asr::RecognitionEvent> events;
+  std::optional<std::string> failure;
+  {
+    // Hold state_mutex_ across the poll: StopRecording transfers
+    // active_session_ to WorkerMain under the same mutex, so validating
+    // identity only after PollEvents() could drain (and then discard)
+    // events that WorkerMain still needs for the final result. PollEvents()
+    // only briefly locks the session, so this state -> session lock order
+    // matches the short critical sections elsewhere and cannot deadlock
+    // with the stop path, which never holds session_io_mutex_ while
+    // acquiring state_mutex_.
+    const std::scoped_lock lock(state_mutex_);
+    if (active_session_ != session || phase_ != vinput::dbus::Status::Recording) {
+      return;
+    }
+    recording_started_at = recording_started_at_;
+    first_non_silent_at = first_non_silent_at_;
+    {
+      const std::scoped_lock session_lock(session_io_mutex_);
+      events = session->PollEvents();
+    }
+    // Re-read failure state after polling: a merged wake-up must not lose a
+    // backend failure that produced events (or no Error event at all).
+    if (auto* async_session =
+            dynamic_cast<vinput::daemon::asr::AsyncRecognitionSession*>(session.get())) {
+      failure = async_session->FailureError();
+    }
+    if (failure.has_value()) {
+      // FailActiveSession below emits the single error notification; do not
+      // also emit one per Error event from the same failure.
+      std::erase_if(events, [](const vinput::daemon::asr::RecognitionEvent& event) {
+        return event.kind == vinput::daemon::asr::RecognitionEventKind::Error;
+      });
+    }
+    ApplyRecognitionEvents(events, &latest_final_text_, &first_partial_logged_,
+                           recording_started_at, first_non_silent_at, dbus_);
+  }
+
+  if (failure.has_value()) {
+    FailActiveSession(session, *failure);
+  }
 }
 
 void DaemonRuntimeController::ScheduleCaptureStopOnMainThread() {
@@ -864,6 +951,11 @@ void DaemonRuntimeController::FlushDeferredActions() {
     deferred.clear(); // Joins async workers on this (main) thread.
   }
 
+  // Worker wake-ups write notify_fd_ without setting pending_capture_stop_,
+  // so poll the active session before the early return below. This only
+  // ever touches active_session_ (still recording); a session handed to
+  // WorkerMain by StopRecording is consumed exclusively there.
+  PollActiveSessionEvents();
   if (!pending_capture_stop_.exchange(false, std::memory_order_acq_rel)) {
     return;
   }
