@@ -39,7 +39,7 @@ using Clock = std::chrono::steady_clock;
 constexpr int kPollSliceMs = 50;
 constexpr int kDefaultWriteTimeoutMs = 5000;
 constexpr int kMaxWriteTimeoutMs = 30000;
-constexpr std::size_t kDrainBudgetBytes = 64 * 1024;
+constexpr std::size_t kDrainBudgetBytes = std::size_t{64} * 1024;
 constexpr int kAwaitFinalTimeoutMs = 10000;
 constexpr int kFinalGraceMs = 200;
 
@@ -462,18 +462,11 @@ private:
         return false;
       }
 
-      pollfd fds[3]{};
-      nfds_t count = 0;
-      fds[count++] = {child_.stdin_fd, POLLOUT, 0};
-      if (child_.stdout_fd >= 0) {
-        fds[count++] = {child_.stdout_fd, POLLIN, 0};
-      }
-      if (child_.stderr_fd >= 0) {
-        fds[count++] = {child_.stderr_fd, POLLIN, 0};
-      }
-
+      pollfd fd{};
+      fd.fd = child_.stdin_fd;
+      fd.events = POLLOUT;
       const auto deadline = std::min(write_deadline, deadline_);
-      const int rc = poll(fds, count, RemainingMs(deadline, kPollSliceMs));
+      const int rc = poll(&fd, 1, RemainingMs(deadline, kPollSliceMs));
       if (rc < 0) {
         if (errno == EINTR) {
           continue;
@@ -484,32 +477,20 @@ private:
         return false;
       }
       if (rc == 0) {
+        // Providers may emit output before reading more stdin; draining it
+        // (bounded per call in PumpIo/Drain*) keeps both pipe directions
+        // moving without extending the absolute write deadline.
+        PumpIo(0, nullptr);
         continue;
       }
 
-      // Providers may emit partial output before reading more stdin.
-      // Drain bounded amounts so neither pipe direction can deadlock or
-      // extend the absolute write deadline indefinitely.
-      for (nfds_t i = 1; i < count; ++i) {
-        if ((fds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) == 0) {
-          continue;
-        }
-        if (fds[i].fd == child_.stdout_fd) {
-          if (!DrainStdout(error)) {
-            return false;
-          }
-        } else if (fds[i].fd == child_.stderr_fd) {
-          DrainStderr();
-        }
-      }
-
-      if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      if ((fd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
         if (error) {
           *error = FormatProviderError(std::move(stderr_tail_), "provider closed stdin.");
         }
         return false;
       }
-      if ((fds[0].revents & POLLOUT) == 0) {
+      if ((fd.revents & POLLOUT) == 0) {
         continue;
       }
 
