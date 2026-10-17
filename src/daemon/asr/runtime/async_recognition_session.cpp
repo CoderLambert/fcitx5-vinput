@@ -1,6 +1,15 @@
 #include "daemon/asr/runtime/async_recognition_session.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <span>
+#include <string>
 #include <utility>
+#include <vector>
+
+#include "daemon/asr/runtime/recognition_contract.h"
 
 namespace vinput::daemon::asr {
 
@@ -22,7 +31,7 @@ AsyncRecognitionSession::~AsyncRecognitionSession() {
 
 bool AsyncRecognitionSession::PushAudio(std::span<const int16_t> pcm, std::string* error) {
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
     if (cancel_requested_ || finish_requested_ || complete_) {
       if (error != nullptr) {
         *error = error_.empty() ? "Streaming session is no longer recording." : error_;
@@ -61,7 +70,7 @@ bool AsyncRecognitionSession::Finish(std::string* error) {
 
 void AsyncRecognitionSession::Cancel() {
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
     if (complete_ || cancel_requested_) {
       return;
     }
@@ -73,24 +82,24 @@ void AsyncRecognitionSession::Cancel() {
 }
 
 std::vector<RecognitionEvent> AsyncRecognitionSession::PollEvents() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  const std::scoped_lock lock(mutex_);
   auto events = std::move(events_);
   events_.clear();
   return events;
 }
 
 std::size_t AsyncRecognitionSession::DroppedChunks() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  const std::scoped_lock lock(mutex_);
   return dropped_chunks_;
 }
 
 std::size_t AsyncRecognitionSession::DroppedSamples() const {
-  std::lock_guard<std::mutex> lock(mutex_);
+  const std::scoped_lock lock(mutex_);
   return dropped_samples_;
 }
 
 void AsyncRecognitionSession::AppendEvents(std::vector<RecognitionEvent> events) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  const std::scoped_lock lock(mutex_);
   for (auto& event : events) {
     events_.push_back(std::move(event));
   }
@@ -98,7 +107,7 @@ void AsyncRecognitionSession::AppendEvents(std::vector<RecognitionEvent> events)
 
 void AsyncRecognitionSession::Complete(bool success, std::string error) {
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
     complete_ = true;
     success_ = success;
     error_ = std::move(error);
@@ -139,7 +148,7 @@ void AsyncRecognitionSession::Run() {
     if (!backend_->PushAudio(chunk, &error)) {
       AppendEvents(backend_->PollEvents());
       {
-        std::lock_guard<std::mutex> lock(mutex_);
+        const std::scoped_lock lock(mutex_);
         error_ = error.empty() ? "Streaming backend rejected audio." : error;
         cancel_requested_ = true;
         queue_.clear();
@@ -156,7 +165,7 @@ void AsyncRecognitionSession::Run() {
   AppendEvents(backend_->PollEvents());
   std::string error;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
     error = error_;
   }
   Complete(false, std::move(error));

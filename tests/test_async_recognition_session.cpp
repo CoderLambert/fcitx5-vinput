@@ -1,4 +1,3 @@
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -6,10 +5,13 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "daemon/asr/runtime/async_recognition_session.h"
+#include "daemon/asr/runtime/recognition_contract.h"
 
 namespace {
 
@@ -57,7 +59,7 @@ public:
   }
 
   bool Finish(std::string* error) override {
-    std::lock_guard<std::mutex> lock(state_->mutex);
+    const std::scoped_lock lock(state_->mutex);
     ++state_->finish_calls;
     pending_.push_back({.kind = RecognitionEventKind::Completed, .text = {}, .error = {}});
     if (error != nullptr) {
@@ -67,13 +69,13 @@ public:
   }
 
   void Cancel() override {
-    std::lock_guard<std::mutex> lock(state_->mutex);
+    const std::scoped_lock lock(state_->mutex);
     ++state_->cancel_calls;
     pending_.push_back({.kind = RecognitionEventKind::Completed, .text = {}, .error = {}});
   }
 
   std::vector<RecognitionEvent> PollEvents() override {
-    std::lock_guard<std::mutex> lock(state_->mutex);
+    const std::scoped_lock lock(state_->mutex);
     auto events = std::move(pending_);
     pending_.clear();
     return events;
@@ -99,7 +101,7 @@ void WaitEntered(const std::shared_ptr<FakeState>& state) {
 
 void OpenGate(const std::shared_ptr<FakeState>& state) {
   {
-    std::lock_guard<std::mutex> lock(state->mutex);
+    const std::scoped_lock lock(state->mutex);
     state->gate_open = true;
   }
   state->gate_cv.notify_all();
@@ -123,14 +125,14 @@ void TestFinishFlushesInOrderExactlyOnce() {
   Expect(session.PushAudio(std::vector<int16_t>{3}, &error), "push 2");
   Expect(session.Finish(&error), "finish succeeds after flushing queue");
   {
-    std::lock_guard<std::mutex> lock(state->mutex);
+    const std::scoped_lock lock(state->mutex);
     Expect(state->received == std::vector<int16_t>({1, 2, 3}), "chunks delivered in order");
     Expect(state->finish_calls == 1, "backend Finish called once");
   }
   Expect(CountCompleted(session.PollEvents()) == 1, "Completed emitted exactly once");
   Expect(session.PollEvents().empty(), "events are not replayed");
   Expect(session.Finish(&error), "second Finish returns cached result");
-  std::lock_guard<std::mutex> lock(state->mutex);
+  const std::scoped_lock lock(state->mutex);
   Expect(state->finish_calls == 1, "second Finish must not re-finish backend");
 }
 
@@ -147,7 +149,7 @@ void TestQueueBoundDropsIncomingChunk() {
   Expect(session.DroppedSamples() == 2, "dropped samples counted");
   OpenGate(state);
   Expect(session.Finish(&error), "finish after drops");
-  std::lock_guard<std::mutex> lock(state->mutex);
+  const std::scoped_lock lock(state->mutex);
   Expect(state->received == std::vector<int16_t>({1, 2, 3, 4, 5, 6}),
          "dropped chunk never delivered");
 }
@@ -163,7 +165,7 @@ void TestCancelClearsQueueAndCompletesOnce() {
   OpenGate(state);
   Expect(!session.Finish(&error), "Finish after Cancel reports failure");
   {
-    std::lock_guard<std::mutex> lock(state->mutex);
+    const std::scoped_lock lock(state->mutex);
     Expect(state->received == std::vector<int16_t>({1}), "queued chunk is discarded by Cancel");
     Expect(state->cancel_calls == 1, "backend Cancel called exactly once");
     Expect(state->finish_calls == 0, "backend Finish not called after Cancel");
@@ -181,7 +183,7 @@ void TestDestructorCancelsAndJoinsPromptly() {
   } // Destructor: Cancel + join; backend must not outlive the worker call.
   const auto elapsed = std::chrono::steady_clock::now() - started;
   Expect(elapsed < std::chrono::seconds(5), "destructor joins promptly");
-  std::lock_guard<std::mutex> lock(state->mutex);
+  const std::scoped_lock lock(state->mutex);
   Expect(state->cancel_calls == 1, "destructor cancels backend exactly once");
 }
 

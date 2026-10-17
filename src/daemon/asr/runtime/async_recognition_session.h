@@ -23,11 +23,13 @@ namespace vinput::daemon::asr {
 class AsyncRecognitionSession final : public RecognitionSession {
 public:
   explicit AsyncRecognitionSession(std::unique_ptr<RecognitionSession> backend,
-                                   std::size_t max_queued_samples = 16000 * 3);
+                                   std::size_t max_queued_samples = std::size_t{16000} * 3);
   ~AsyncRecognitionSession() override;
 
   AsyncRecognitionSession(const AsyncRecognitionSession&) = delete;
   AsyncRecognitionSession& operator=(const AsyncRecognitionSession&) = delete;
+  AsyncRecognitionSession(AsyncRecognitionSession&&) = delete;
+  AsyncRecognitionSession& operator=(AsyncRecognitionSession&&) = delete;
 
   bool PushAudio(std::span<const int16_t> pcm, std::string* error) override;
   bool Finish(std::string* error) override;
