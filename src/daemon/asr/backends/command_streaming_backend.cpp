@@ -24,6 +24,8 @@
 #include "common/utils/process_utils.h"
 #include "common/utils/string_utils.h"
 
+#include "daemon/asr/backends/command_streaming_time_utils.h"
+
 extern char** environ;
 
 namespace vinput::daemon::asr {
@@ -242,12 +244,7 @@ bool HasTimedOut(Clock::time_point deadline) {
 }
 
 int RemainingMs(Clock::time_point deadline, int fallback_ms) {
-  const auto remaining =
-      std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
-  if (remaining <= 0) {
-    return 0;
-  }
-  return std::min<int>(fallback_ms, static_cast<int>(remaining));
+  return RemainingPollMs(deadline, fallback_ms, Clock::now());
 }
 
 class CommandStreamingSession : public RecognitionSession {
@@ -524,6 +521,18 @@ private:
     }
 
     const int timeout_ms = HasTimedOut(deadline_) ? 0 : RemainingMs(deadline_, poll_timeout_ms);
+    // Once both output pipes reach EOF, Finish may still be waiting for the
+    // provider to exit. A bounded wait prevents a tight waitpid(WNOHANG) loop.
+    // Preserve PumpIo(0)'s nonblocking behavior for live audio ingestion.
+    if (nfds == 0 && !child_.child_exited && timeout_ms > 0) {
+      const int rc = poll(nullptr, 0, timeout_ms);
+      if (rc < 0 && errno != EINTR) {
+        if (error != nullptr) {
+          *error = std::string("poll failed: ") + std::strerror(errno);
+        }
+        return false;
+      }
+    }
     if (nfds > 0) {
       const int rc = poll(fds, nfds, timeout_ms);
       if (rc < 0 && errno != EINTR) {
