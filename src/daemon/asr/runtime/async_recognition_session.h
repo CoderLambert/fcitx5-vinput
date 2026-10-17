@@ -18,8 +18,8 @@ namespace vinput::daemon::asr {
 // Wraps a streaming session so PushAudio/PollEvents run on one worker thread
 // instead of the audio capture callback. The callback only enqueues an owned
 // copy. The queue is bounded (default 3 s at 16 kHz): when full, the incoming
-// chunk is dropped and counted rather than blocking the realtime callback --
-// a late chunk is worth less than a stalled capture thread.
+// chunk is counted as dropped and the session fails explicitly rather than
+// blocking the realtime callback or silently losing audio.
 class AsyncRecognitionSession final : public RecognitionSession {
 public:
   explicit AsyncRecognitionSession(std::unique_ptr<RecognitionSession> backend,
