@@ -178,9 +178,7 @@ public:
   }
 
 private:
-  void AppendDebugPcm(std::span<const float> samples) {
-    AppendDiagnosticPcm(debug_pcm_, samples);
-  }
+  void AppendDebugPcm(std::span<const float> samples) { AppendDiagnosticPcm(debug_pcm_, samples); }
 
   void UpdateAudioStats(std::span<const float> samples) {
     total_samples_ += samples.size();
