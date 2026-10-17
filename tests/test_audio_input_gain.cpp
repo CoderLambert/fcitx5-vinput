@@ -20,14 +20,15 @@ void Check(bool ok, const char* message) {
 void CheckSamples(const std::vector<int16_t>& actual, std::span<const int16_t> expected) {
   Check(actual.size() == expected.size(), "unexpected sample count");
   for (std::size_t index = 0; index < expected.size(); ++index) {
-    Check(actual[index] == expected[index], "unexpected sample value");
+    Check(actual.at(index) == *(expected.begin() + static_cast<std::ptrdiff_t>(index)),
+          "unexpected sample value");
   }
 }
 
 void TestBufferedCaptureGain() {
   // Buffered mode exports the raw AudioCapture buffer at Stop.
   std::vector<int16_t> captured{1000, -1000, 20000, -20000, 32767, -32768, 0};
-  vinput::audio::ApplyGainI16(captured, 2.0f);
+  vinput::audio::ApplyGainI16(captured, 2.0F);
   constexpr std::array<int16_t, 7> expected{2000, -2000, 32767, -32768, 32767, -32768, 0};
   CheckSamples(captured, expected);
 }
@@ -39,7 +40,7 @@ void TestChunkedOnlyGainsRecoveredRawTail() {
   std::vector<int16_t> pending{2000, -2000}; // Already gained.
   constexpr std::size_t delivered_samples = 0;
   const std::size_t tail_start = delivered_samples + pending.size();
-  vinput::audio::ApplyGainI16(std::span<int16_t>(raw_capture).subspan(tail_start), 2.0f);
+  vinput::audio::ApplyGainI16(std::span<int16_t>(raw_capture).subspan(tail_start), 2.0F);
   pending.insert(pending.end(), raw_capture.begin() + static_cast<std::ptrdiff_t>(tail_start),
                  raw_capture.end());
   constexpr std::array<int16_t, 4> expected{2000, -2000, 6000, -6000};
@@ -48,20 +49,20 @@ void TestChunkedOnlyGainsRecoveredRawTail() {
 
 void TestUnityAndFractionalGain() {
   std::vector<int16_t> samples{1000, -1000, 32767, -32768};
-  vinput::audio::ApplyGainI16(samples, 1.0f);
+  vinput::audio::ApplyGainI16(samples, 1.0F);
   constexpr std::array<int16_t, 4> unchanged{1000, -1000, 32767, -32768};
   CheckSamples(samples, unchanged);
-  vinput::audio::ApplyGainI16(samples, 0.5f);
+  vinput::audio::ApplyGainI16(samples, 0.5F);
   constexpr std::array<int16_t, 4> halved{500, -500, 16383, -16384};
   CheckSamples(samples, halved);
 }
 
 void TestSubspanLeavesAlreadyProcessedSamplesAlone() {
   std::vector<int16_t> samples{1000, -1000, 250, -250};
-  vinput::audio::ApplyGainI16(std::span<int16_t>(samples).subspan(2), 2.0f);
+  vinput::audio::ApplyGainI16(std::span<int16_t>(samples).subspan(2), 2.0F);
   constexpr std::array<int16_t, 4> expected{1000, -1000, 500, -500};
   CheckSamples(samples, expected);
-  vinput::audio::ApplyGainI16(std::span<int16_t>(samples).subspan(samples.size()), 2.0f);
+  vinput::audio::ApplyGainI16(std::span<int16_t>(samples).subspan(samples.size()), 2.0F);
   CheckSamples(samples, expected);
 }
 
