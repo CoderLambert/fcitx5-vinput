@@ -19,12 +19,12 @@ public:
       return std::nullopt;
     }
     active_ = true;
-    return Ticket{++request_id_, generation_};
+    return Ticket{.id = ++request_id_, .generation = generation_};
   }
 
   void Invalidate() { ++generation_; }
 
-  bool IsActive(Ticket ticket) const { return active_ && request_id_ == ticket.id; }
+  [[nodiscard]] bool IsActive(Ticket ticket) const { return active_ && request_id_ == ticket.id; }
 
   bool Complete(Ticket ticket) {
     if (!IsActive(ticket)) {

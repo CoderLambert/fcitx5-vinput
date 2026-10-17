@@ -809,51 +809,51 @@ void VinputEngine::clearDaemonSyncFailure() {
 }
 
 void VinputEngine::syncFrontendWithDaemonStatus() {
-  if (!bus_ || !daemonSyncAllowed()) {
+  if (bus_ == nullptr || !daemonSyncAllowed()) {
     return;
   }
   const auto ticket = status_poll_gate_.TryBegin();
-  if (!ticket) {
+  if (!ticket.has_value()) {
     return; // Exactly one status query may be pending.
   }
 
   auto msg = bus_->createMethodCall(kBusName, kObjectPath, kInterface, kMethodGetStatus);
   const std::weak_ptr<bool> token = lifetime_token_;
-  pending_status_call_slot_ = msg.callAsync(
-      vinput::runtime::kDbusCallTimeoutUsec,
-      [this, token, ticket = *ticket](fcitx::dbus::Message& reply) {
-        if (token.expired() || !status_poll_gate_.IsActive(ticket)) {
-          return true;
-        }
-        auto slot = std::move(pending_status_call_slot_);
-        if (!status_poll_gate_.Complete(ticket)) {
-          return true; // A newer session or status signal superseded this query.
-        }
-        if (!reply || reply.isError()) {
-          noteDaemonSyncFailure();
-          return true;
-        }
-        clearDaemonSyncFailure();
-        std::string status;
-        reply >> status;
-        last_known_daemon_status_ = status;
-        if (status.empty() || (!session_ && status_ic_ == nullptr)) {
-          return true;
-        }
+  pending_status_call_slot_ =
+      msg.callAsync(vinput::runtime::kDbusCallTimeoutUsec,
+                    [this, token, ticket = *ticket](fcitx::dbus::Message& reply) {
+                      if (token.expired() || !status_poll_gate_.IsActive(ticket)) {
+                        return true;
+                      }
+                      auto slot = std::move(pending_status_call_slot_);
+                      if (!status_poll_gate_.Complete(ticket)) {
+                        return true; // A newer session or status signal superseded this query.
+                      }
+                      if (!reply || reply.isError()) {
+                        noteDaemonSyncFailure();
+                        return true;
+                      }
+                      clearDaemonSyncFailure();
+                      std::string status;
+                      reply >> status;
+                      last_known_daemon_status_ = status;
+                      if (status.empty() || (!session_ && status_ic_ == nullptr)) {
+                        return true;
+                      }
 
-        if (status == kStatusIdle && session_) {
-          const auto now = std::chrono::steady_clock::now();
-          if (!polled_idle_since_) {
-            polled_idle_since_ = now;
-          }
-          if (now - *polled_idle_since_ < kPolledIdleRecoveryDelay) {
-            return true;
-          }
-        }
-        polled_idle_since_.reset();
-        applyDaemonStatusLocally(status);
-        return true;
-      });
+                      if (status == kStatusIdle && session_) {
+                        const auto now = std::chrono::steady_clock::now();
+                        if (!polled_idle_since_) {
+                          polled_idle_since_ = now;
+                        }
+                        if (now - *polled_idle_since_ < kPolledIdleRecoveryDelay) {
+                          return true;
+                        }
+                      }
+                      polled_idle_since_.reset();
+                      applyDaemonStatusLocally(status);
+                      return true;
+                    });
   if (!pending_status_call_slot_) {
     status_poll_gate_.Cancel();
     noteDaemonSyncFailure();

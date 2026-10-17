@@ -25,10 +25,10 @@
 #include "common/asr/recognition_result.h"
 #include "common/config/vinput_config.h"
 #include "common/dbus/dbus_interface.h"
-#include "dbus/status_poll_gate.h"
 #include "common/dbus/error_info.h"
 #include "common/scene/postprocess_scene.h"
 
+#include "dbus/status_poll_gate.h"
 #include "menu/palette_command.h"
 
 class VinputNotifierDBusObject;
