@@ -61,6 +61,14 @@ private:
   bool SynchronizeAsrBackend(std::string* error = nullptr);
   void MaybeApplyPendingAsrBackendReload();
   void HandleIncomingAudio(std::span<const int16_t> pcm);
+  // Main-thread only: poll the still-recording active session after a worker
+  // wake-up, and surface a worker-side backend failure via FailActiveSession.
+  void PollActiveSessionEvents();
+  // Existing push-failure transition (release active session, phase=Error,
+  // notify once, stop capture). Returns false when `session` is no longer
+  // the active one, in which case nothing is emitted for it.
+  bool FailActiveSession(const std::shared_ptr<vinput::daemon::asr::RecognitionSession>& session,
+                         const std::string& error_message);
   void ScheduleCaptureStopOnMainThread();
   void RestoreOutputIfDucked();
   std::shared_ptr<vinput::daemon::asr::RecognitionSession> ReleaseActiveSessionLocked();
