@@ -84,6 +84,10 @@ private:
   std::atomic<bool> postprocessing_cancel_requested_{false};
   std::optional<RecognitionOrder> current_order_;
   std::shared_ptr<vinput::daemon::asr::RecognitionSession> active_session_;
+  // Sessions cancelled on the capture callback are destroyed (worker joined)
+  // on the main thread in FlushDeferredActions(), never on the callback.
+  std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>>
+      deferred_cancelled_sessions_;
   vinput::daemon::asr::BackendDescriptor active_backend_;
   bool current_is_command_ = false;
   std::string current_selected_text_;

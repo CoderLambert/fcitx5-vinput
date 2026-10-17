@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <stdexcept>
@@ -18,6 +19,7 @@
 #include "common/i18n.h"
 #include "common/utils/debug_log.h"
 
+#include "daemon/asr/runtime/async_recognition_session.h"
 #include "daemon/audio/audio_utils.h"
 #include "daemon/audio/buffered_capture_counter.h"
 #include "daemon/remote/remote_text_service.h"
@@ -410,6 +412,15 @@ DaemonRuntimeController::StartRecordingInternal(bool is_command, const std::stri
     return DbusService::MethodResult::Failure(message);
   }
 
+  if (active_backend.capabilities.audio_delivery_mode ==
+      vinput::daemon::asr::AudioDeliveryMode::Chunked) {
+    // Isolate backend PushAudio/PollEvents on the session's worker thread;
+    // the capture callback then only enqueues owned chunks. Installation
+    // still happens under state_mutex_ below, so the StartupPcmBuffer prefix
+    // replay order is unchanged.
+    session = std::make_unique<vinput::daemon::asr::AsyncRecognitionSession>(std::move(session));
+  }
+
   bool abort_started_capture = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -564,8 +575,14 @@ void DaemonRuntimeController::HandleIncomingAudio(std::span<const int16_t> pcm) 
         }
       }
       if (session_to_cancel) {
-        std::lock_guard<std::mutex> session_lock(session_io_mutex_);
-        session_to_cancel->Cancel();
+        {
+          const std::scoped_lock session_lock(session_io_mutex_);
+          session_to_cancel->Cancel();
+        }
+        // Destroying the async session joins its worker; do that on the main
+        // thread (FlushDeferredActions), not on this capture callback.
+        const std::scoped_lock lock(state_mutex_);
+        deferred_cancelled_sessions_.push_back(std::move(session_to_cancel));
       }
       if (!session_was_active) {
         return;
@@ -782,6 +799,15 @@ int DaemonRuntimeController::GetNotifyFd() const {
 }
 
 void DaemonRuntimeController::FlushDeferredActions() {
+  {
+    std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>> deferred;
+    {
+      const std::scoped_lock lock(state_mutex_);
+      deferred.swap(deferred_cancelled_sessions_);
+    }
+    deferred.clear(); // Joins async workers on this (main) thread.
+  }
+
   if (notify_fd_ >= 0) {
     uint64_t value = 0;
     while (read(notify_fd_, &value, sizeof(value)) == sizeof(value)) {
@@ -855,6 +881,12 @@ void DaemonRuntimeController::Shutdown() {
   if (worker_.joinable()) {
     worker_.join();
   }
+  std::vector<std::shared_ptr<vinput::daemon::asr::RecognitionSession>> deferred;
+  {
+    const std::scoped_lock lock(state_mutex_);
+    deferred.swap(deferred_cancelled_sessions_);
+  }
+  deferred.clear();
 }
 
 void DaemonRuntimeController::EnterPostprocessing(bool command_mode) {

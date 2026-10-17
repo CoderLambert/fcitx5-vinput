@@ -150,6 +150,13 @@ add_executable(test_unity_input_gain
 target_include_directories(test_unity_input_gain PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_unity_input_gain COMMAND test_unity_input_gain)
 
+add_executable(test_async_recognition_session
+    test_async_recognition_session.cpp
+    ${CMAKE_SOURCE_DIR}/src/daemon/asr/runtime/async_recognition_session.cpp
+)
+target_include_directories(test_async_recognition_session PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_async_recognition_session COMMAND test_async_recognition_session)
+
 add_executable(test_diagnostic_pcm test_diagnostic_pcm.cpp)
 target_include_directories(test_diagnostic_pcm PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME test_diagnostic_pcm COMMAND test_diagnostic_pcm)
