@@ -24,6 +24,8 @@
 #include "common/utils/process_utils.h"
 #include "common/utils/string_utils.h"
 
+#include "daemon/asr/backends/command_streaming_time_utils.h"
+
 extern char** environ;
 
 namespace vinput::daemon::asr {
@@ -242,12 +244,7 @@ bool HasTimedOut(Clock::time_point deadline) {
 }
 
 int RemainingMs(Clock::time_point deadline, int fallback_ms) {
-  const auto remaining =
-      std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
-  if (remaining <= 0) {
-    return 0;
-  }
-  return std::min<int>(fallback_ms, static_cast<int>(remaining));
+  return RemainingPollMs(deadline, fallback_ms, Clock::now());
 }
 
 class CommandStreamingSession : public RecognitionSession {

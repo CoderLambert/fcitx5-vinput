@@ -87,6 +87,10 @@ target_link_libraries(test_command_streaming PRIVATE
 
 add_test(NAME test_command_streaming COMMAND test_command_streaming)
 
+add_executable(test_command_streaming_time test_command_streaming_time.cpp)
+target_include_directories(test_command_streaming_time PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME test_command_streaming_time COMMAND test_command_streaming_time)
+
 add_executable(test_installed_manifest
     test_installed_manifest.cpp
 )
